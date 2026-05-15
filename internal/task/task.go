@@ -1,0 +1,302 @@
+package task
+
+import (
+	"archive/tar"
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+)
+
+// Meta holds orchestrator-managed metadata for a single task.
+type Meta struct {
+	Name        string    `json:"name"`
+	PackagePath string    `json:"package_path"`
+	UploadedAt  time.Time `json:"uploaded_at"`
+	RunCommand  string    `json:"run_command"`
+	StopCommand string    `json:"stop_command"`
+	ReadmePath  string    `json:"readme_path,omitempty"`
+}
+
+// Manager handles task lifecycle: upload, parse, configure, delete.
+type Manager struct {
+	tasksDir     string
+	taskMetaDir  string
+	pipelinesDir string
+}
+
+// NewManager creates a Manager. It ensures required directories exist.
+func NewManager(tasksDir, taskMetaDir, pipelinesDir string) *Manager {
+	os.MkdirAll(tasksDir, 0755)
+	os.MkdirAll(taskMetaDir, 0755)
+	return &Manager{tasksDir: tasksDir, taskMetaDir: taskMetaDir, pipelinesDir: pipelinesDir}
+}
+
+// --- helpers ---
+
+func (m *Manager) metaPath(name string) string {
+	return filepath.Join(m.taskMetaDir, name+".json")
+}
+
+func (m *Manager) readMeta(name string) (*Meta, error) {
+	f, err := os.Open(m.metaPath(name))
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	var meta Meta
+	if err := json.NewDecoder(f).Decode(&meta); err != nil {
+		return nil, fmt.Errorf("parse meta for %s: %w", name, err)
+	}
+	return &meta, nil
+}
+
+func (m *Manager) writeMeta(meta *Meta) error {
+	f, err := os.Create(m.metaPath(meta.Name))
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	enc := json.NewEncoder(f)
+	enc.SetIndent("", "  ")
+	return enc.Encode(meta)
+}
+
+// --- public methods ---
+
+// Exists returns true if a task with the given name already exists.
+func (m *Manager) Exists(name string) bool {
+	_, err := os.Stat(m.metaPath(name))
+	return err == nil
+}
+
+// Pipelines returns pipeline IDs that reference this task.
+func (m *Manager) Pipelines(name string) ([]string, error) {
+	entries, err := os.ReadDir(m.pipelinesDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var ids []string
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		f, err := os.Open(filepath.Join(m.pipelinesDir, e.Name()))
+		if err != nil {
+			continue
+		}
+		var p struct {
+			ID    string   `json:"id"`
+			Tasks []string `json:"tasks"`
+		}
+		if json.NewDecoder(f).Decode(&p) == nil {
+			for _, t := range p.Tasks {
+				if t == name {
+					ids = append(ids, p.ID)
+					break
+				}
+			}
+		}
+		f.Close()
+	}
+	return ids, nil
+}
+
+// Upload extracts a tar archive into tasks/ and writes metadata.
+func (m *Manager) Upload(tarPath string) (*Meta, error) {
+	name := strings.TrimSuffix(filepath.Base(tarPath), ".tar")
+	if name == "" || name == filepath.Base(tarPath) {
+		return nil, fmt.Errorf("invalid tar filename, must be <name>.tar")
+	}
+	if m.Exists(name) {
+		return nil, fmt.Errorf("task %q already exists", name)
+	}
+
+	tmpDir, err := os.MkdirTemp(m.tasksDir, ".upload-")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(tmpDir)
+
+	if err := extractTar(tarPath, tmpDir); err != nil {
+		return nil, fmt.Errorf("extract tar: %w", err)
+	}
+
+	entries, err := os.ReadDir(tmpDir)
+	if err != nil {
+		return nil, err
+	}
+
+	dstDir := filepath.Join(m.tasksDir, name)
+	var srcDir string
+	if len(entries) == 1 && entries[0].IsDir() {
+		srcDir = filepath.Join(tmpDir, entries[0].Name())
+	} else {
+		srcDir = tmpDir
+	}
+
+	if err := os.Rename(srcDir, dstDir); err != nil {
+		return nil, fmt.Errorf("move to %s: %w", dstDir, err)
+	}
+
+	var readmePath string
+	if _, found := parseReadme(dstDir); found {
+		readmePath = "README.md" // actual path will be resolved in ParseReadme
+	}
+
+	meta := &Meta{
+		Name:        name,
+		PackagePath: filepath.Join("tasks", name),
+		UploadedAt:  time.Now().UTC(),
+		RunCommand:  "./run.sh",
+		StopCommand: "./stop.sh",
+		ReadmePath:  readmePath,
+	}
+	if err := m.writeMeta(meta); err != nil {
+		return nil, fmt.Errorf("write meta: %w", err)
+	}
+	return meta, nil
+}
+
+// extractTar extracts a tar archive to dst, guarding against path traversal.
+func extractTar(tarPath, dst string) error {
+	f, err := os.Open(tarPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	tr := tar.NewReader(f)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+
+		clean := filepath.Clean(hdr.Name)
+		if strings.HasPrefix(clean, ".."+string(os.PathSeparator)) || clean == ".." {
+			continue
+		}
+
+		target := filepath.Join(dst, clean)
+		switch hdr.Typeflag {
+		case tar.TypeDir:
+			os.MkdirAll(target, 0755)
+		case tar.TypeReg:
+			os.MkdirAll(filepath.Dir(target), 0755)
+			out, err := os.Create(target)
+			if err != nil {
+				return err
+			}
+			if _, err := io.Copy(out, tr); err != nil {
+				out.Close()
+				return err
+			}
+			out.Close()
+			os.Chmod(target, os.FileMode(hdr.Mode)&0777)
+		}
+	}
+	return nil
+}
+
+// readmePriority lists case-insensitive readme candidates in priority order.
+var readmePriority = []string{"README.md", "readme.md", "readme", "readme.txt"}
+
+// parseReadme searches dir for a readme file and returns (content, found).
+func parseReadme(dir string) (string, bool) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", false
+	}
+
+	// Build map: lowercase name → actual name
+	lowerToActual := make(map[string]string, len(entries))
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		lowerToActual[strings.ToLower(e.Name())] = e.Name()
+	}
+
+	for _, candidate := range readmePriority {
+		if actual, ok := lowerToActual[strings.ToLower(candidate)]; ok {
+			content, err := os.ReadFile(filepath.Join(dir, actual))
+			if err != nil {
+				continue
+			}
+			return string(content), true
+		}
+	}
+	return "", false
+}
+
+// ParseReadme looks for a readme file in the task package directory.
+func (m *Manager) ParseReadme(name string) (content string, found bool) {
+	dir := filepath.Join(m.tasksDir, name)
+	return parseReadme(dir)
+}
+
+// SetCommands persists run/stop commands for a task.
+func (m *Manager) SetCommands(name, runCmd, stopCmd string) error {
+	meta, err := m.readMeta(name)
+	if err != nil {
+		return fmt.Errorf("task %q not found: %w", name, err)
+	}
+	meta.RunCommand = runCmd
+	meta.StopCommand = stopCmd
+	return m.writeMeta(meta)
+}
+
+// Delete removes a task's package directory and metadata file.
+func (m *Manager) Delete(name string) error {
+	ids, err := m.Pipelines(name)
+	if err != nil {
+		return err
+	}
+	if len(ids) > 0 {
+		return fmt.Errorf("task %q is used by pipelines: %s", name, strings.Join(ids, ", "))
+	}
+	if err := os.RemoveAll(filepath.Join(m.tasksDir, name)); err != nil {
+		return err
+	}
+	os.Remove(m.metaPath(name))
+	return nil
+}
+
+// All returns metadata for every registered task.
+func (m *Manager) All() ([]Meta, error) {
+	entries, err := os.ReadDir(m.taskMetaDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var tasks []Meta
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		name := strings.TrimSuffix(e.Name(), ".json")
+		meta, err := m.readMeta(name)
+		if err != nil {
+			continue
+		}
+		tasks = append(tasks, *meta)
+	}
+	return tasks, nil
+}
+
+// Get returns metadata for a specific task.
+func (m *Manager) Get(name string) (*Meta, error) {
+	return m.readMeta(name)
+}

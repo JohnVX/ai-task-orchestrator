@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ai-task-orchestrator</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header>
+  <h1>ai-task-orchestrator</h1>
+  <div id="global-status"></div>
+</header>
+
+<main>
+  <aside>
+    <section id="task-panel">
+      <h2>Tasks</h2>
+      <div id="task-upload">
+        <input type="file" id="task-file" accept=".tar">
+        <button id="task-upload-btn">上传</button>
+      </div>
+      <ul id="task-list"></ul>
+    </section>
+
+    <section id="pipeline-panel">
+      <h2>Pipelines</h2>
+      <div id="pipeline-create">
+        <input type="text" id="pipeline-name" placeholder="流水线名称">
+        <button id="pipeline-create-btn">创建</button>
+      </div>
+      <ul id="pipeline-list"></ul>
+      <!-- task detail panel -->
+      <div id="task-detail" style="display:none">
+        <h3 class="task-detail-name"></h3>
+        <label>Run Command:</label>
+        <input type="text" class="task-detail-run-cmd">
+        <label>Stop Command:</label>
+        <input type="text" class="task-detail-stop-cmd">
+        <pre class="task-detail-readme"></pre>
+        <button id="task-save-btn">保存</button>
+        <button id="task-delete-btn" class="danger">删除</button>
+        <button id="task-close-btn">关闭</button>
+      </div>
+    </section>
+  </aside>
+
+  <section id="canvas">
+    <div id="canvas-empty">选择一条流水线查看或编辑</div>
+    <div id="canvas-content" style="display:none">
+      <div id="pipeline-toolbar">
+        <button id="pipeline-run-btn">运行</button>
+        <button id="pipeline-stop-btn">停止</button>
+        <button id="pipeline-delete-btn">删除</button>
+      </div>
+      <ul id="pipeline-task-list"></ul>
+      <div id="run-history">
+        <h3>运行历史</h3>
+        <table id="run-history-table"></table>
+      </div>
+      <div id="run-detail" style="display:none;margin-top:16px"></div>
+      <div id="log-viewer" style="display:none;margin-top:16px"></div>
+    </div>
+  </section>
+</main>
+
+<script src="/static/sortable.min.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

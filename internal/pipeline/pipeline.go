@@ -1,0 +1,228 @@
+package pipeline
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// Status values for a pipeline.
+const (
+	StatusIdle    = "idle"
+	StatusRunning = "running"
+)
+
+// Pipeline represents a named, ordered sequence of tasks.
+type Pipeline struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Tasks     []string  `json:"tasks"`
+	CreatedAt time.Time `json:"created_at"`
+	Status    string    `json:"status"`
+}
+
+// TaskChecker is the interface pipeline needs from the task package.
+type TaskChecker interface {
+	Exists(name string) bool
+	Pipelines(name string) ([]string, error)
+}
+
+// RunCleaner is the interface pipeline needs from the runner package.
+type RunCleaner interface {
+	DeleteRuns(pipelineID string) error
+}
+
+// Manager handles pipeline CRUD and task ordering.
+type Manager struct {
+	pipelinesDir string
+	taskMgr      TaskChecker
+	runCleaner   RunCleaner
+}
+
+// NewManager creates a Manager. It ensures the pipelines directory exists.
+func NewManager(pipelinesDir string, taskMgr TaskChecker, runCleaner RunCleaner) *Manager {
+	os.MkdirAll(pipelinesDir, 0755)
+	return &Manager{pipelinesDir: pipelinesDir, taskMgr: taskMgr, runCleaner: runCleaner}
+}
+
+// --- helpers ---
+
+func (m *Manager) pipelinePath(id string) string {
+	return filepath.Join(m.pipelinesDir, id+".json")
+}
+
+func (m *Manager) readPipeline(id string) (*Pipeline, error) {
+	f, err := os.Open(m.pipelinePath(id))
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	var p Pipeline
+	if err := json.NewDecoder(f).Decode(&p); err != nil {
+		return nil, fmt.Errorf("parse pipeline %s: %w", id, err)
+	}
+	return &p, nil
+}
+
+func (m *Manager) writePipeline(p *Pipeline) error {
+	f, err := os.Create(m.pipelinePath(p.ID))
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	enc := json.NewEncoder(f)
+	enc.SetIndent("", "  ")
+	return enc.Encode(p)
+}
+
+// nextID generates the next pipeline ID by scanning existing files.
+func (m *Manager) nextID() string {
+	entries, err := os.ReadDir(m.pipelinesDir)
+	if err != nil {
+		return "pipeline-1"
+	}
+	maxN := 0
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		rest := strings.TrimSuffix(strings.TrimPrefix(e.Name(), "pipeline-"), ".json")
+		if n, err := strconv.Atoi(rest); err == nil && n > maxN {
+			maxN = n
+		}
+	}
+	return fmt.Sprintf("pipeline-%d", maxN+1)
+}
+
+// --- public methods ---
+
+// Create writes a new pipeline definition.
+func (m *Manager) Create(name string) (*Pipeline, error) {
+	all, err := m.All()
+	if err != nil {
+		return nil, err
+	}
+	for _, p := range all {
+		if strings.EqualFold(p.Name, name) {
+			return nil, fmt.Errorf("pipeline name %q already exists", name)
+		}
+	}
+
+	p := &Pipeline{
+		ID:        m.nextID(),
+		Name:      name,
+		Tasks:     []string{},
+		CreatedAt: time.Now().UTC(),
+		Status:    StatusIdle,
+	}
+	if err := m.writePipeline(p); err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+// Delete removes a pipeline and its associated run data.
+func (m *Manager) Delete(id string) error {
+	p, err := m.readPipeline(id)
+	if err != nil {
+		return err
+	}
+	if p.Status == StatusRunning {
+		return fmt.Errorf("pipeline %s is running, stop it first", id)
+	}
+	if m.runCleaner != nil {
+		if err := m.runCleaner.DeleteRuns(id); err != nil {
+			return fmt.Errorf("delete runs for pipeline %s: %w", id, err)
+		}
+	}
+	return os.Remove(m.pipelinePath(id))
+}
+
+// Get returns a pipeline by ID.
+func (m *Manager) Get(id string) (*Pipeline, error) {
+	return m.readPipeline(id)
+}
+
+// All returns all pipelines, sorted by creation time.
+func (m *Manager) All() ([]Pipeline, error) {
+	entries, err := os.ReadDir(m.pipelinesDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var pipes []Pipeline
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		id := strings.TrimSuffix(e.Name(), ".json")
+		p, err := m.readPipeline(id)
+		if err != nil {
+			continue
+		}
+		pipes = append(pipes, *p)
+	}
+	sort.Slice(pipes, func(i, j int) bool { return pipes[i].CreatedAt.Before(pipes[j].CreatedAt) })
+	return pipes, nil
+}
+
+// AddTask appends a task to the pipeline's task list.
+func (m *Manager) AddTask(pipelineID, taskName string) error {
+	p, err := m.readPipeline(pipelineID)
+	if err != nil {
+		return err
+	}
+	p.Tasks = append(p.Tasks, taskName)
+	return m.writePipeline(p)
+}
+
+// RemoveTask removes a task from the pipeline's task list.
+func (m *Manager) RemoveTask(pipelineID, taskName string) error {
+	p, err := m.readPipeline(pipelineID)
+	if err != nil {
+		return err
+	}
+	for i, t := range p.Tasks {
+		if t == taskName {
+			p.Tasks = append(p.Tasks[:i], p.Tasks[i+1:]...)
+			return m.writePipeline(p)
+		}
+	}
+	return nil
+}
+
+// ReorderTasks sets the task list to a new order.
+func (m *Manager) ReorderTasks(pipelineID string, taskNames []string) error {
+	p, err := m.readPipeline(pipelineID)
+	if err != nil {
+		return err
+	}
+	p.Tasks = taskNames
+	return m.writePipeline(p)
+}
+
+// SetStatus updates the pipeline status.
+func (m *Manager) SetStatus(id, status string) error {
+	p, err := m.readPipeline(id)
+	if err != nil {
+		return err
+	}
+	p.Status = status
+	return m.writePipeline(p)
+}
+
+// IsRunning returns true if the pipeline is currently running.
+func (m *Manager) IsRunning(id string) bool {
+	p, err := m.Get(id)
+	if err != nil {
+		return false
+	}
+	return p.Status == StatusRunning
+}

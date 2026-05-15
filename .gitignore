@@ -1,0 +1,14 @@
+# Binary
+orchestrator
+
+# Runtime data
+data/
+
+# Claude
+.claude/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo

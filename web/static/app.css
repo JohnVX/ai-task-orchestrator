@@ -1,0 +1,178 @@
+/* reset */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: #f5f5f5;
+  color: #333;
+}
+
+header {
+  background: #1a1a2e;
+  color: #fff;
+  padding: 12px 24px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+header h1 { font-size: 1.2rem; font-weight: 500; }
+
+main {
+  display: flex;
+  height: calc(100vh - 52px);
+}
+
+/* sidebar */
+aside {
+  width: 260px;
+  background: #fff;
+  border-right: 1px solid #ddd;
+  overflow-y: auto;
+  padding: 16px;
+  flex-shrink: 0;
+}
+
+aside h2 {
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  color: #888;
+  margin-bottom: 8px;
+}
+
+aside section { margin-bottom: 20px; }
+
+/* task list */
+#task-list, #pipeline-list {
+  list-style: none;
+}
+
+#task-list li, #pipeline-list li {
+  padding: 6px 8px;
+  margin: 2px 0;
+  border-radius: 4px;
+  cursor: grab;
+  font-size: 0.9rem;
+}
+
+#task-list li:hover, #pipeline-list li:hover { background: #eee; }
+
+#task-list li { background: #e8f0fe; }
+
+#pipeline-list li { background: #e6f7e6; cursor: pointer; }
+
+#pipeline-list li.active { background: #b7e4b7; font-weight: 600; }
+
+/* canvas */
+#canvas {
+  flex: 1;
+  padding: 24px;
+  overflow-y: auto;
+}
+
+#canvas-empty {
+  color: #999;
+  text-align: center;
+  margin-top: 80px;
+  font-size: 1rem;
+}
+
+/* pipeline task chain */
+#pipeline-task-list {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 0;
+  margin: 16px 0;
+  padding: 16px;
+  background: #fff;
+  border-radius: 8px;
+  border: 2px dashed #ddd;
+  min-height: 80px;
+}
+
+#pipeline-task-list li {
+  background: #e8f0fe;
+  padding: 10px 16px;
+  border-radius: 6px;
+  cursor: grab;
+  font-size: 0.9rem;
+}
+
+#pipeline-task-list li::after {
+  content: "→";
+  margin-left: 12px;
+  color: #aaa;
+}
+
+#pipeline-task-list li:last-child::after { content: none; }
+
+/* toolbar */
+#pipeline-toolbar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+button {
+  padding: 6px 16px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  background: #fff;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+button:hover { background: #eee; }
+
+button.primary { background: #1a73e8; color: #fff; border-color: #1a73e8; }
+button.danger  { background: #d93025; color: #fff; border-color: #d93025; }
+button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* inputs */
+input[type="text"], input[type="file"] {
+  padding: 6px 8px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  width: 100%;
+  margin-bottom: 4px;
+}
+
+/* run history table */
+#run-history { margin-top: 24px; }
+
+#run-history h3 { font-size: 0.9rem; margin-bottom: 8px; }
+
+#run-history-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+
+#run-history-table th, #run-history-table td {
+  padding: 6px 12px;
+  text-align: left;
+  border-bottom: 1px solid #eee;
+}
+
+#run-history-table th { color: #888; font-weight: 500; }
+
+/* task detail */
+#task-detail {
+  margin-top: 12px;
+  padding: 12px;
+  background: #f9f9f9;
+  border-radius: 6px;
+  border: 1px solid #ddd;
+}
+#task-detail h3 { font-size: 0.95rem; margin-bottom: 8px; }
+#task-detail label { display: block; font-size: 0.75rem; color: #888; margin-top: 6px; }
+#task-detail input[type="text"] { margin-bottom: 6px; }
+#task-detail pre {
+  max-height: 240px;
+  overflow: auto;
+  background: #fff;
+  padding: 8px;
+  border-radius: 4px;
+  font-size: 0.8rem;
+  margin: 8px 0;
+  white-space: pre-wrap;
+}
+#task-detail button { margin-right: 4px; margin-top: 4px; }
