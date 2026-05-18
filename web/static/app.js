@@ -480,8 +480,10 @@ function startPolling() {
     try {
       const state = await api.getState();
       const statusEl = document.getElementById('global-status');
-      if (state && state.running_pipeline) {
-        statusEl.textContent = '运行中: ' + state.running_pipeline + ' / ' + state.current_task;
+      if (state && state.running_pipelines && state.running_pipelines.length > 0) {
+        const count = state.running_pipelines.length;
+        const first = state.running_pipelines[0];
+        statusEl.textContent = count > 1 ? (count + ' 条流水线运行中') : ('运行中: ' + first.pipeline_id + ' / ' + first.current_task);
         statusEl.style.color = '#4caf50';
       } else {
         statusEl.textContent = '空闲';

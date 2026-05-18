@@ -323,11 +323,20 @@ func (h *Handler) handleStartPipeline(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleStopPipeline(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	state, _ := h.Runner.State()
-	if state == nil || state.RunningPipeline != id {
+	running := false
+	if state != nil {
+		for _, rp := range state.RunningPipelines {
+			if rp.PipelineID == id {
+				running = true
+				break
+			}
+		}
+	}
+	if !running {
 		writeError(w, http.StatusBadRequest, "pipeline is not running")
 		return
 	}
-	if err := h.Runner.Stop(); err != nil {
+	if err := h.Runner.Stop(id); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}

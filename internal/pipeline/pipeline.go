@@ -35,6 +35,7 @@ type TaskChecker interface {
 // RunCleaner is the interface pipeline needs from the runner package.
 type RunCleaner interface {
 	DeleteRuns(pipelineID string) error
+	IsRunning(pipelineID string) bool
 }
 
 // Manager handles pipeline CRUD and task ordering.
@@ -135,6 +136,9 @@ func (m *Manager) Delete(id string) error {
 	if p.Status == StatusRunning {
 		return fmt.Errorf("pipeline %s is running, stop it first", id)
 	}
+	if m.runCleaner != nil && m.runCleaner.IsRunning(id) {
+		return fmt.Errorf("pipeline %s is running, stop it first", id)
+	}
 	if m.runCleaner != nil {
 		if err := m.runCleaner.DeleteRuns(id); err != nil {
 			return fmt.Errorf("delete runs for pipeline %s: %w", id, err)
@@ -173,11 +177,14 @@ func (m *Manager) All() ([]Pipeline, error) {
 	return pipes, nil
 }
 
-// AddTask appends a task to the pipeline's task list.
+// AddTask appends a task to the pipeline's task list. The task must exist.
 func (m *Manager) AddTask(pipelineID, taskName string) error {
 	p, err := m.readPipeline(pipelineID)
 	if err != nil {
 		return err
+	}
+	if !m.taskMgr.Exists(taskName) {
+		return fmt.Errorf("task %q does not exist", taskName)
 	}
 	p.Tasks = append(p.Tasks, taskName)
 	return m.writePipeline(p)

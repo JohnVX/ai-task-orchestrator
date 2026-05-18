@@ -142,7 +142,10 @@ func (m *Manager) Upload(tarPath string) (*Meta, error) {
 	}
 
 	if err := os.Rename(srcDir, dstDir); err != nil {
-		return nil, fmt.Errorf("move to %s: %w", dstDir, err)
+		if copyErr := copyDir(srcDir, dstDir); copyErr != nil {
+			return nil, fmt.Errorf("move to %s (rename: %v): %w", dstDir, err, copyErr)
+		}
+		os.RemoveAll(srcDir)
 	}
 
 	var readmePath string
@@ -216,6 +219,29 @@ func extractTar(tarPath, dst string) error {
 		}
 	}
 	return nil
+	}
+
+// copyDir copies a directory recursively. Used as fallback when os.Rename fails
+// across filesystem boundaries (EXDEV).
+func copyDir(src, dst string) error {
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if info.IsDir() {
+			return os.MkdirAll(target, info.Mode())
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(target, data, info.Mode())
+	})
 }
 
 // parseTaskDescriptor reads for-task-orchestrator.txt and extracts start/stop commands.

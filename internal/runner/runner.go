@@ -37,17 +37,30 @@ type TaskInstance struct {
 	ExitCode   int        `json:"exit_code"`
 }
 
-// OrchestratorState is the global run lock persisted to orchestrator_state.json.
+// PipelineRunState tracks a single running pipeline within the state file.
+type PipelineRunState struct {
+	PipelineID   string `json:"pipeline_id"`
+	CurrentTask  string `json:"current_task"`
+	CurrentRunID string `json:"current_run_id"`
+}
+
+// OrchestratorState is the global state persisted to orchestrator_state.json.
+// When PID is non-zero it acts as a single-instance lock. RunningPipelines
+// tracks all currently executing pipelines for crash recovery.
 type OrchestratorState struct {
-	RunningPipeline string `json:"running_pipeline"`
-	CurrentTask     string `json:"current_task"`
-	CurrentRunID    string `json:"current_run_id"`
-	PID             int    `json:"pid"`
+	PID              int                `json:"pid"`
+	RunningPipelines []PipelineRunState `json:"running_pipelines"`
 }
 
 // PipelineStatusSetter updates pipeline status (set by runner during execution).
 type PipelineStatusSetter interface {
 	SetStatus(id, status string) error
+}
+
+// runControl holds per-pipeline execution state, protected by Manager.mu.
+type runControl struct {
+	cmd    *exec.Cmd
+	stopCh chan struct{}
 }
 
 // Manager handles run lifecycle: start, stop, dual-buffer management.
@@ -56,17 +69,16 @@ type Manager struct {
 	dataDir        string
 	taskMgr        *task.Manager
 	pipelineStatus PipelineStatusSetter
-	logger          *slog.Logger
+	logger         *slog.Logger
 
-	mu         sync.Mutex
-	currentCmd *exec.Cmd
-	stopCh     chan struct{}
+	mu      sync.Mutex
+	running map[string]*runControl // pipelineID → control
 }
 
 // NewManager creates a Manager. It ensures the runs directory exists.
 func NewManager(runsDir, dataDir string, taskMgr *task.Manager, logger *slog.Logger) *Manager {
 	os.MkdirAll(runsDir, 0755)
-	return &Manager{runsDir: runsDir, dataDir: dataDir, taskMgr: taskMgr, logger: logger}
+	return &Manager{runsDir: runsDir, dataDir: dataDir, taskMgr: taskMgr, logger: logger, running: make(map[string]*runControl)}
 }
 
 // SetPipelineStatusSetter sets the pipeline status updater (wired after construction).
@@ -163,17 +175,13 @@ func (m *Manager) appendEvent(runID, format string, args ...any) {
 
 // --- public methods ---
 
-// Start begins pipeline execution. Returns error if another pipeline is running.
+// Start begins pipeline execution. Multiple pipelines can run concurrently.
 func (m *Manager) Start(pipelineID string, tasks []string) (runID string, err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	state, err := m.readState()
-	if err != nil {
-		return "", fmt.Errorf("read state: %w", err)
-	}
-	if state.RunningPipeline != "" {
-		return "", fmt.Errorf("pipeline %q is already running", state.RunningPipeline)
+	if _, exists := m.running[pipelineID]; exists {
+		return "", fmt.Errorf("pipeline %q is already running", pipelineID)
 	}
 
 	runID = m.nextRunID()
@@ -185,12 +193,15 @@ func (m *Manager) Start(pipelineID string, tasks []string) (runID string, err er
 		os.MkdirAll(filepath.Join(runDir, t), 0755)
 	}
 
-	state = &OrchestratorState{
-		RunningPipeline: pipelineID,
-		CurrentTask:     tasks[0],
-		CurrentRunID:    runID,
-		PID:             os.Getpid(),
+	state, _ := m.readState()
+	if state.PID == 0 {
+		state.PID = os.Getpid()
 	}
+	state.RunningPipelines = append(state.RunningPipelines, PipelineRunState{
+		PipelineID:   pipelineID,
+		CurrentTask:  tasks[0],
+		CurrentRunID: runID,
+	})
 	if err := m.writeState(state); err != nil {
 		return "", fmt.Errorf("write state: %w", err)
 	}
@@ -198,27 +209,29 @@ func (m *Manager) Start(pipelineID string, tasks []string) (runID string, err er
 	m.pipelineStatus.SetStatus(pipelineID, "running")
 	m.logger.Info("pipeline started", "pipeline_id", pipelineID, "run_id", runID)
 	m.appendEvent(runID, "%s pipeline=%s event=pipeline_started", time.Now().UTC().Format(time.RFC3339), pipelineID)
-	m.stopCh = make(chan struct{})
 
-	go m.runLoop(pipelineID, runID, runDir, tasks)
+	ctl := &runControl{stopCh: make(chan struct{})}
+	m.running[pipelineID] = ctl
+
+	go m.runLoop(pipelineID, runID, runDir, tasks, ctl)
 
 	return runID, nil
 }
 
-func (m *Manager) runLoop(pipelineID, runID, runDir string, tasks []string) {
+func (m *Manager) runLoop(pipelineID, runID, runDir string, tasks []string, ctl *runControl) {
 	defer func() {
-		m.clearState()
+		m.removeFromState(pipelineID)
 		m.logger.Info("pipeline finished", "pipeline_id", pipelineID, "run_id", runID)
 		m.appendEvent(runID, "%s pipeline=%s event=pipeline_finished", time.Now().UTC().Format(time.RFC3339), pipelineID)
 		m.pipelineStatus.SetStatus(pipelineID, "idle")
 		m.mu.Lock()
-		m.currentCmd = nil
+		delete(m.running, pipelineID)
 		m.mu.Unlock()
 	}()
 
 	for i, taskName := range tasks {
 		select {
-		case <-m.stopCh:
+		case <-ctl.stopCh:
 			m.markTask(runDir, taskName, runID, pipelineID, TaskStatusPending, nil)
 			m.logger.Info("task status changed", "run_id", runID, "task", taskName, "status", TaskStatusPending)
 			m.appendEvent(runID, "%s task=%s status=%s", time.Now().UTC().Format(time.RFC3339), taskName, TaskStatusPending)
@@ -243,7 +256,9 @@ func (m *Manager) runLoop(pipelineID, runID, runDir string, tasks []string) {
 			writeBuf, readBuf = "task-data-2", "task-data-1"
 		}
 
-		clearDir(filepath.Join(runDir, writeBuf))
+		if err := clearDir(filepath.Join(runDir, writeBuf)); err != nil {
+			m.logger.Warn("clear write buffer", "dir", writeBuf, "error", err)
+		}
 
 		now := time.Now().UTC()
 		writeTaskMeta(runDir, taskName, runID, pipelineID, TaskStatusRunning, &now, nil, -1)
@@ -259,16 +274,37 @@ func (m *Manager) runLoop(pipelineID, runID, runDir string, tasks []string) {
 			"TASK_DATA_2="+filepath.Join(runDir, "task-data-2"),
 		)
 
-		stdoutF, _ := os.Create(filepath.Join(runDir, taskName, "stdout.log"))
-		stderrF, _ := os.Create(filepath.Join(runDir, taskName, "stderr.log"))
+		stdoutF, cerr := os.Create(filepath.Join(runDir, taskName, "stdout.log"))
+		if cerr != nil {
+			m.logger.Warn("create stdout log", "error", cerr)
+		}
+		stderrF, cerr := os.Create(filepath.Join(runDir, taskName, "stderr.log"))
+		if cerr != nil {
+			m.logger.Warn("create stderr log", "error", cerr)
+		}
 		cmd.Stdout = stdoutF
 		cmd.Stderr = stderrF
 
 		m.mu.Lock()
-		m.currentCmd = cmd
+		ctl.cmd = cmd
 		m.mu.Unlock()
 
-		cmd.Start()
+		if err := cmd.Start(); err != nil {
+			m.mu.Lock()
+			ctl.cmd = nil
+			m.mu.Unlock()
+			if stdoutF != nil {
+				stdoutF.Close()
+			}
+			if stderrF != nil {
+				stderrF.Close()
+			}
+			endedAt := time.Now().UTC()
+			writeTaskMeta(runDir, taskName, runID, pipelineID, TaskStatusFailed, &now, &endedAt, -1)
+			m.logger.Error("task start failed", "task", taskName, "error", err)
+			m.appendEvent(runID, "%s task=%s status=%s error=%s", time.Now().UTC().Format(time.RFC3339), taskName, TaskStatusFailed, err)
+			return
+		}
 
 		waitDone := make(chan error, 1)
 		go func() { waitDone <- cmd.Wait() }()
@@ -277,7 +313,7 @@ func (m *Manager) runLoop(pipelineID, runID, runDir string, tasks []string) {
 		select {
 		case execErr = <-waitDone:
 			// normal completion
-		case <-m.stopCh:
+		case <-ctl.stopCh:
 			m.runStopCommand(meta)
 			cmd.Process.Signal(syscall.SIGTERM)
 			select {
@@ -289,11 +325,15 @@ func (m *Manager) runLoop(pipelineID, runID, runDir string, tasks []string) {
 		}
 
 		m.mu.Lock()
-		m.currentCmd = nil
+		ctl.cmd = nil
 		m.mu.Unlock()
 
-		stdoutF.Close()
-		stderrF.Close()
+		if stdoutF != nil {
+			stdoutF.Close()
+		}
+		if stderrF != nil {
+			stderrF.Close()
+		}
 
 		endedAt := time.Now().UTC()
 
@@ -304,7 +344,7 @@ func (m *Manager) runLoop(pipelineID, runID, runDir string, tasks []string) {
 			}
 			status := TaskStatusFailed
 			select {
-			case <-m.stopCh:
+			case <-ctl.stopCh:
 				status = TaskStatusStopped
 			default:
 			}
@@ -340,10 +380,12 @@ func (m *Manager) runStopCommand(meta *task.Meta) {
 
 func (m *Manager) updateState(pipelineID, taskName, runID string) {
 	state, _ := m.readState()
-	state.RunningPipeline = pipelineID
-	state.CurrentTask = taskName
-	state.CurrentRunID = runID
-	state.PID = os.Getpid()
+	for i, rp := range state.RunningPipelines {
+		if rp.PipelineID == pipelineID {
+			state.RunningPipelines[i].CurrentTask = taskName
+			break
+		}
+	}
 	m.writeState(state)
 }
 
@@ -355,22 +397,29 @@ func (m *Manager) markTask(runDir, taskName, runID, pipelineID, status string, s
 	writeTaskMeta(runDir, taskName, runID, pipelineID, status, startedAt, &endedAt, -1)
 }
 
-// Stop halts the currently running pipeline.
-func (m *Manager) Stop() error {
+// Stop halts a specific running pipeline.
+func (m *Manager) Stop(pipelineID string) error {
 	m.mu.Lock()
-	if m.stopCh == nil {
-		m.mu.Unlock()
-		return fmt.Errorf("no pipeline is running")
+	defer m.mu.Unlock()
+	ctl, ok := m.running[pipelineID]
+	if !ok {
+		return fmt.Errorf("pipeline %q is not running", pipelineID)
 	}
 	select {
-	case <-m.stopCh:
-		m.mu.Unlock()
-		return fmt.Errorf("no pipeline is running")
+	case <-ctl.stopCh:
+		return fmt.Errorf("pipeline %q is already stopping", pipelineID)
 	default:
-		close(m.stopCh)
+		close(ctl.stopCh)
 	}
-	m.mu.Unlock()
 	return nil
+}
+
+// IsRunning returns true if the given pipeline is currently executing.
+func (m *Manager) IsRunning(pipelineID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, ok := m.running[pipelineID]
+	return ok
 }
 
 // State returns the current orchestrator global state.
@@ -426,6 +475,27 @@ func (m *Manager) RunEvents(runID string) (string, error) {
 	return string(data), nil
 }
 
+// removeFromState removes a single pipeline from the persisted state.
+// If no running pipelines remain, the state file is deleted.
+func (m *Manager) removeFromState(pipelineID string) {
+	state, _ := m.readState()
+	if state == nil {
+		return
+	}
+	updated := make([]PipelineRunState, 0, len(state.RunningPipelines))
+	for _, rp := range state.RunningPipelines {
+		if rp.PipelineID != pipelineID {
+			updated = append(updated, rp)
+		}
+	}
+	if len(updated) == 0 {
+		m.clearState()
+	} else {
+		state.RunningPipelines = updated
+		m.writeState(state)
+	}
+}
+
 // DeleteRun removes a single run directory.
 func (m *Manager) DeleteRun(runID string) error {
 	if !strings.HasPrefix(runID, "run-") {
@@ -441,7 +511,13 @@ func (m *Manager) DeleteRun(runID string) error {
 
 	m.mu.Lock()
 	state, _ := m.readState()
-	active := state != nil && state.CurrentRunID == runID
+	active := false
+	for _, rp := range state.RunningPipelines {
+		if rp.CurrentRunID == runID {
+			active = true
+			break
+		}
+	}
 	m.mu.Unlock()
 	if active {
 		return fmt.Errorf("cannot delete active run %q", runID)
@@ -492,13 +568,13 @@ func (m *Manager) RunDirSize(runID string) (int64, error) {
 	return size, err
 }
 
-// RecoverOnStartup checks the lock file PID, cleans up stale locks.
+// RecoverOnStartup checks the lock file PID, cleans up stale locks for all pipelines.
 func (m *Manager) RecoverOnStartup() error {
 	state, err := m.readState()
 	if err != nil {
 		return err
 	}
-	if state.PID == 0 || state.RunningPipeline == "" {
+	if state.PID == 0 || len(state.RunningPipelines) == 0 {
 		return nil
 	}
 
@@ -507,38 +583,40 @@ func (m *Manager) RecoverOnStartup() error {
 		return fmt.Errorf("another orchestrator instance is running (PID %d)", state.PID)
 	}
 
-	// Stale lock: mark running task as crashed.
-	runDir := filepath.Join(m.runsDir, state.CurrentRunID)
-	now := time.Now().UTC()
-	writeTaskMeta(runDir, state.CurrentTask, state.CurrentRunID, state.RunningPipeline, TaskStatusCrashed, nil, &now, -1)
-	m.logger.Info("task status changed", "run_id", state.CurrentRunID, "task", state.CurrentTask, "status", TaskStatusCrashed, "reason", "stale_lock")
-	m.appendEvent(state.CurrentRunID, "%s task=%s status=%s reason=stale_lock", time.Now().UTC().Format(time.RFC3339), state.CurrentTask, TaskStatusCrashed)
+	for _, ps := range state.RunningPipelines {
+		runDir := filepath.Join(m.runsDir, ps.CurrentRunID)
+		os.MkdirAll(filepath.Join(runDir, ps.CurrentTask), 0755)
+		now := time.Now().UTC()
+		writeTaskMeta(runDir, ps.CurrentTask, ps.CurrentRunID, ps.PipelineID, TaskStatusCrashed, nil, &now, -1)
+		m.logger.Info("task status changed", "run_id", ps.CurrentRunID, "task", ps.CurrentTask, "status", TaskStatusCrashed, "reason", "stale_lock")
+		m.appendEvent(ps.CurrentRunID, "%s task=%s status=%s reason=stale_lock", time.Now().UTC().Format(time.RFC3339), ps.CurrentTask, TaskStatusCrashed)
 
-	// Also look for any running task instances and crash them.
-	entries, err := os.ReadDir(runDir)
-	if err == nil {
-		for _, e := range entries {
-			if !e.IsDir() || strings.HasPrefix(e.Name(), "task-data-") {
-				continue
+		entries, err := os.ReadDir(runDir)
+		if err == nil {
+			for _, e := range entries {
+				if !e.IsDir() || strings.HasPrefix(e.Name(), "task-data-") {
+					continue
+				}
+				metaPath := filepath.Join(runDir, e.Name(), "meta.json")
+				f, err := os.Open(metaPath)
+				if err != nil {
+					continue
+				}
+				var inst TaskInstance
+				if json.NewDecoder(f).Decode(&inst) == nil && inst.Status == TaskStatusRunning {
+					endTime := time.Now().UTC()
+					os.MkdirAll(filepath.Join(runDir, e.Name()), 0755)
+					writeTaskMeta(runDir, e.Name(), ps.CurrentRunID, ps.PipelineID, TaskStatusCrashed, inst.StartedAt, &endTime, -1)
+					m.logger.Info("task status changed", "run_id", ps.CurrentRunID, "task", e.Name(), "status", TaskStatusCrashed, "reason", "stale_lock")
+					m.appendEvent(ps.CurrentRunID, "%s task=%s status=%s reason=stale_lock", time.Now().UTC().Format(time.RFC3339), e.Name(), TaskStatusCrashed)
+				}
+				f.Close()
 			}
-			metaPath := filepath.Join(runDir, e.Name(), "meta.json")
-			f, err := os.Open(metaPath)
-			if err != nil {
-				continue
-			}
-			var inst TaskInstance
-			if json.NewDecoder(f).Decode(&inst) == nil && inst.Status == TaskStatusRunning {
-				endTime := time.Now().UTC()
-				writeTaskMeta(runDir, e.Name(), state.CurrentRunID, state.RunningPipeline, TaskStatusCrashed, inst.StartedAt, &endTime, -1)
-				m.logger.Info("task status changed", "run_id", state.CurrentRunID, "task", e.Name(), "status", TaskStatusCrashed, "reason", "stale_lock")
-				m.appendEvent(state.CurrentRunID, "%s task=%s status=%s reason=stale_lock", time.Now().UTC().Format(time.RFC3339), e.Name(), TaskStatusCrashed)
-			}
-			f.Close()
 		}
+		m.pipelineStatus.SetStatus(ps.PipelineID, "idle")
 	}
 
 	m.clearState()
-	m.pipelineStatus.SetStatus(state.RunningPipeline, "idle")
 	return nil
 }
 

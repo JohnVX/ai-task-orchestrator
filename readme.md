@@ -40,8 +40,8 @@ go build -o ai-task-orchestrator .
 
 ### 全局约束
 
-- **全局运行锁**：同一时刻最多只有一条流水线在运行。ai-task-orchestrator 崩溃后通过 PID 存活检测自动解锁。
-- **严格串行**：流水线内 task 逐个执行，不支持并行。想并发可自行在 task 内实现。
+- **多流水线并发**：不同流水线可以同时运行，互不干扰，每条流水线有独立的数据目录和运行控制。
+- **严格串行**：单条流水线内 task 逐个执行，不支持并行。想并发可自行在 task 内实现。
 - **停止 = 失败**：手动停止流水线 → stop_command 执行 → 超时 10s 后 SIGKILL 强杀 → 标记当前 task failed → 链上后续不触发。
 - **上游数据自理**：第一个 task 的输入由 task 自身解决，ai-task-orchestrator 不提供初始输入机制。
 - **多实例隔离**：不同 `-data` 目录的多个进程完全独立，互不干扰；同一 data 目录同时只允许一个进程，后启动的会检测 PID 冲突并拒绝启动。
@@ -81,7 +81,7 @@ go build -o ai-task-orchestrator .
 │   └── run-002/
 │
 ├── orchestrator.log                ← 平台日志
-└── orchestrator_state.json         ← 全局运行锁 { running_pipeline, current_task, current_run_id, pid }
+└── orchestrator_state.json         ← 全局运行锁及多流水线运行状态 { pid, running_pipelines[] }
 ```
 
 ## 数据文件格式
@@ -135,14 +135,17 @@ Run 中 task 实例状态：`pending` | `running` | `success` | `failed` | `stop
 
 ```json
 {
-  "running_pipeline": null,
-  "current_task": null,
-  "current_run_id": null,
-  "pid": 12345
+  "pid": 12345,
+  "running_pipelines": [
+    {"pipeline_id": "pipeline-1", "current_task": "task-A", "current_run_id": "run-001"},
+    {"pipeline_id": "pipeline-2", "current_task": "task-B", "current_run_id": "run-002"}
+  ]
 }
 ```
 
-崩溃恢复：启动时检查 `pid` 对应进程是否存活。不存活则判定为脏数据，清理锁，将上次 run 中 `running` 状态的 task 实例标记为 `crashed`。
+`pid` 用于单实例锁和崩溃恢复。`running_pipelines` 数组记录当前在运行的所有流水线。
+
+崩溃恢复：启动时检查 `pid` 对应进程是否存活。不存活则遍历 `running_pipelines`，将所有运行中的 task 标记为 `crashed`，逐条将 pipeline 状态复位为 `idle`，最后清空锁文件。
 
 ## 核心规则
 
@@ -165,7 +168,7 @@ Run 中 task 实例状态：`pending` | `running` | `success` | `failed` | `stop
 | 拖入 task | 关联 task 到 pipeline。同一 task 可在同一 pipeline 中出现多次（暂不禁止）。 |
 | 拖出 task | 解除关联并删除该 pipeline 下该 task 的运行数据。UI 上提示"脱出将删除历史运行数据"。 |
 | 调整顺序 | 拖拽改变 task 在 pipeline 中的排序。 |
-| 运行 | 从第一个 task 开始串行执行。前提：全局运行锁空闲且平台状态健康。每次运行产生一个 run_id。Pipeline 状态变为 `running`，跑完或停止后回到 `idle`。 |
+| 运行 | 从第一个 task 开始串行执行。多条流水线可同时运行互不干扰，每条产生独立的 `run_id`。Pipeline 状态变为 `running`，跑完或停止后回到 `idle`。 |
 | 停止 | 仅 pipeline 状态为 `running` 时可用。执行 `stop_command` → 超时 10s 后 SIGKILL → 标记当前 task 实例 `stopped` → pipeline 状态回 `idle` → 链上后续不触发。 |
 | 删除 | `running` 状态时不可删。二次确认后删除 pipeline 定义 + 该 pipeline 下所有 run 数据 + 该 pipeline 下所有 task 的运行数据。 |
 
