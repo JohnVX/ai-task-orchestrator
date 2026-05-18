@@ -193,7 +193,7 @@ func extractTar(tarPath, dst string) error {
 		}
 
 		clean := filepath.Clean(hdr.Name)
-		if strings.HasPrefix(clean, ".."+string(os.PathSeparator)) || clean == ".." {
+		if filepath.IsAbs(clean) || strings.HasPrefix(clean, ".."+string(os.PathSeparator)) || clean == ".." {
 			continue
 		}
 
