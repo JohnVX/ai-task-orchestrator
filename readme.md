@@ -4,17 +4,22 @@
 
 **与 AI 解耦** — task 可以是任意可执行程序，平台不感知内部实现。**单二进制部署** — Go 编译，零运行时依赖。
 
+## 设计原则
+
+- **与 AI/大模型解耦**：ai-task-orchestrator 是通用任务编排与进程管理平台，不感知 task 内部是否是 AI agent。task 可以是任意可执行程序（调用大模型 API 的脚本、数据处理程序、模型训练任务等）。
+- **舞台与演员分离**：ai-task-orchestrator 提供"舞台和调度"，task 是"演员"。舞台不需要知道演员在演什么。
+
 ## 快速开始
 
 ```bash
 # 构建
-go build -o orchestrator .
+go build -o ai-task-orchestrator .
 
 # 启动（默认 data 目录 ./data，端口 8080，日志级别 info）
-./orchestrator
+./ai-task-orchestrator
 
 # 自定义配置
-./orchestrator -data /var/lib/orchestrator -port 9090 -log-level debug
+./ai-task-orchestrator -data /var/lib/orchestrator -port 9090 -log-level debug
 ```
 
 启动参数：
@@ -29,18 +34,175 @@ go build -o orchestrator .
 
 | 概念 | 说明 |
 |---|---|
-| **Task** | 用户上传的 tar 包。Task name 取自文件名，全局唯一，不可改名。可通过 `for-task-orchestrator.txt` 自描述 run/stop 命令，否则默认 `./run.sh` / `./stop.sh`。支持下载导出 |
-| **Pipeline** | 多个 task 的有序编排，严格串行执行，同一时刻最多一条流水线运行 |
-| **Run** | Pipeline 的一次实际执行，包含每个 task 的运行状态、日志和数据 |
+| **Task** | 用户上传的 tar 包。Task name 取自文件名，全局唯一，不可改名。可通过 `for-task-orchestrator.txt` 自描述 run/stop 命令，否则默认 `./run.sh` / `./stop.sh`。支持下载导出。 |
+| **Pipeline** | 多个 task 的有序编排，严格串行执行。 |
+| **Run** | Pipeline 的一次实际执行，包含每个 task 的运行状态、日志和数据。 |
 
-### 双缓冲数据传递
+### 全局约束
 
-Task 之间通过 `task-data-1/` 和 `task-data-2/` 两个目录传递数据：
+- **全局运行锁**：同一时刻最多只有一条流水线在运行。ai-task-orchestrator 崩溃后通过 PID 存活检测自动解锁。
+- **严格串行**：流水线内 task 逐个执行，不支持并行。想并发可自行在 task 内实现。
+- **停止 = 失败**：手动停止流水线 → stop_command 执行 → 超时 10s 后 SIGKILL 强杀 → 标记当前 task failed → 链上后续不触发。
+- **上游数据自理**：第一个 task 的输入由 task 自身解决，ai-task-orchestrator 不提供初始输入机制。
 
-- 偶数索引 task：清空 task-data-1 → 读取 task-data-2 → 写入 task-data-1
-- 奇数索引 task：清空 task-data-2 → 读取 task-data-1 → 写入 task-data-2
+## 目录与存储结构
 
-每个 task 通过环境变量 `TASK_DATA_READ`、`TASK_DATA_WRITE` 获知读写路径。
+```
+{data}/
+├── tasks/                          ← 用户上传的 task 包（解包后只读，平台不写入）
+│   ├── task-foo/
+│   │   ├── README.md
+│   │   ├── run.sh
+│   │   └── ...                     ← 用户的内容
+│   └── task-bar/
+│       └── ...
+│
+├── task_meta/                      ← 平台维护的 task 元数据
+│   ├── task-foo.json
+│   └── task-bar.json
+│
+├── pipelines/                      ← 流水线定义（关联关系的唯一权威来源）
+│   ├── pipeline-1.json
+│   └── pipeline-2.json
+│
+├── runs/                           ← 运行数据
+│   ├── run-001/                    ← pipeline-1 的某次运行
+│   │   ├── events.log              ← 状态变更事件日志
+│   │   ├── task-data-1/            ← 共享数据目录，双缓冲其一
+│   │   ├── task-data-2/            ← 共享数据目录，双缓冲其二
+│   │   ├── task-A/
+│   │   │   ├── stdout.log
+│   │   │   ├── stderr.log
+│   │   │   └── meta.json
+│   │   ├── task-B/
+│   │   └── task-C/
+│   └── run-002/
+│
+├── orchestrator.log                ← 平台日志
+└── orchestrator_state.json         ← 全局运行锁 { running_pipeline, current_task, current_run_id, pid }
+```
+
+## 数据文件格式
+
+### `task_meta/{task-name}.json`
+
+```json
+{
+  "name": "task-foo",
+  "package_path": "tasks/task-foo",
+  "uploaded_at": "2026-05-15T10:00:00Z",
+  "run_command": "./run.sh",
+  "stop_command": "./stop.sh",
+  "readme_path": "README.md"
+}
+```
+
+注：不再存储 `pipelines` 字段。查询 task 关联了哪些 pipeline 时，遍历 `pipelines/` 目录动态计算。
+
+### `pipelines/{pipeline-id}.json`
+
+```json
+{
+  "id": "pipeline-1",
+  "name": "我的流水线",
+  "tasks": ["task-A", "task-B", "task-C"],
+  "created_at": "2026-05-15T10:00:00Z",
+  "status": "idle"
+}
+```
+
+Pipeline 自身状态：`idle` | `running`
+
+### `runs/{run-id}/{task-name}/meta.json`
+
+```json
+{
+  "task_name": "task-A",
+  "run_id": "run-001",
+  "pipeline_id": "pipeline-1",
+  "status": "success",
+  "started_at": "2026-05-15T10:01:00Z",
+  "ended_at": "2026-05-15T10:02:30Z",
+  "exit_code": 0
+}
+```
+
+Run 中 task 实例状态：`pending` | `running` | `success` | `failed` | `stopped` | `crashed`
+
+### `orchestrator_state.json`
+
+```json
+{
+  "running_pipeline": null,
+  "current_task": null,
+  "current_run_id": null,
+  "pid": 12345
+}
+```
+
+崩溃恢复：启动时检查 `pid` 对应进程是否存活。不存活则判定为脏数据，清理锁，将上次 run 中 `running` 状态的 task 实例标记为 `crashed`。
+
+## 核心规则
+
+### Task 管理
+
+| 操作 | 规则 |
+|---|---|
+| 上传 | `task_xxx.tar` 文件名（去 `.tar`）即 task name，全局唯一，不可改名。解包时若顶层恰好一个目录则直接用，若为散文件则自动用 task name 创建目录包裹。同名拒绝上传。 |
+| 自描述 | 包根目录下 `for-task-orchestrator.txt`，格式 `start: <cmd>` / `stop: <cmd>`，上传时自动解析，优先级高于默认的 `./run.sh` / `./stop.sh`。 |
+| 解析 | 在包目录下大小写不敏感查找 `README.md` / `readme.md` / `readme` / `readme.txt`，优先级：`README.md` > `readme.md` > `readme` > `readme.txt`。找到则解析展示。 |
+| 配置 | 运行/停止命令存入 `task_meta/{name}.json`，跨 pipeline 共享。 |
+| 下载 | 将 task 包目录打包为 tar，通过 API 导出。 |
+| 删除 | 查询所有 pipeline 文件，若有关联则拒绝。二次确认后删除包目录 `tasks/{name}/` + 元数据 `task_meta/{name}.json`。 |
+
+### Pipeline 管理
+
+| 操作 | 规则 |
+|---|---|
+| 创建 | 输入名称，不重名则创建。 |
+| 拖入 task | 关联 task 到 pipeline。同一 task 可在同一 pipeline 中出现多次（暂不禁止）。 |
+| 拖出 task | 解除关联并删除该 pipeline 下该 task 的运行数据。UI 上提示"脱出将删除历史运行数据"。 |
+| 调整顺序 | 拖拽改变 task 在 pipeline 中的排序。 |
+| 运行 | 从第一个 task 开始串行执行。前提：全局运行锁空闲且平台状态健康。每次运行产生一个 run_id。Pipeline 状态变为 `running`，跑完或停止后回到 `idle`。 |
+| 停止 | 仅 pipeline 状态为 `running` 时可用。执行 `stop_command` → 超时 10s 后 SIGKILL → 标记当前 task 实例 `stopped` → pipeline 状态回 `idle` → 链上后续不触发。 |
+| 删除 | `running` 状态时不可删。二次确认后删除 pipeline 定义 + 该 pipeline 下所有 run 数据 + 该 pipeline 下所有 task 的运行数据。 |
+
+### 运行数据管理
+
+| 操作 | 规则 |
+|---|---|
+| 日志存储 | stdout/stderr 存文件，事后查看，不实时推送。 |
+| 事件日志 | 每个 run 目录下 `events.log` 记录 pipeline/task 状态变更，可通过 API 和前端按钮查看。 |
+| 日志删除 | 按 pipeline 粒度、按 run 粒度均可删除。 |
+| 数据隔离 | 不同 pipeline → 不同 run 目录；同一 run 内不同 task → 不同子目录。 |
+| 磁盘监控 | 记录每个 run 目录的大小，界面上展示。 |
+
+## 双缓冲数据传递
+
+Task 之间通过 `task-data-1/` 和 `task-data-2/` 两个目录传递数据。每个 task 通过环境变量 `TASK_DATA_READ`、`TASK_DATA_WRITE` 获知读写路径。
+
+```
+Pipeline 启动前:  创建 task-data-1/ task-data-2/
+
+task-1 (index=0, 偶数) 开始前:   清空 task-data-1/
+task-1 运行中:                  写入 task-data-1/（给 task-2）
+task-1 结束后:                  清空 task-data-2/
+
+task-2 (index=1, 奇数) 开始前:   task-data-1 保留（上游数据）、task-data-2 已清空
+task-2 运行中:                  读取 task-data-1/，写入 task-data-2/（给 task-3）
+task-2 结束后:                  清空 task-data-1/
+
+task-3 (index=2, 偶数) 开始前:   task-data-2 保留、task-data-1 已清空
+task-3 运行中:                  读取 task-data-2/，写入 task-data-1/（给 task-4）
+...
+
+规律:
+  - 偶数索引 task (0,2,4...): 清空 task-data-1，读取 task-data-2，写入 task-data-1
+  - 奇数索引 task (1,3,5...): 清空 task-data-2，读取 task-data-1，写入 task-data-2
+
+平台职责: 严格按上述时序做好目录的清空（rm -rf + mkdir），不干预 task 对 task-data 的读/写内容。
+注: 流水线最后一个 task 写入 task-data 的输出无下游消费，属于正常行为。
+```
 
 ## API 概览
 
@@ -57,20 +219,6 @@ Task 之间通过 `task-data-1/` 和 `task-data-2/` 两个目录传递数据：
 | GET/DELETE | `/api/runs/{id}` | 运行详情+日志 / 删除单次运行 |
 | GET | `/api/runs/{id}/events` | 运行事件日志（JSON 文本） |
 | GET | `/api/state` | 全局运行状态 |
-
-## 设计要点
-
-- **全局运行锁** — 同时最多一个流水线运行，通过 `orchestrator_state.json` 实现
-- **崩溃恢复** — 启动时 PID 存活检测，自动清理脏锁并标记 crashed
-- **停止策略** — 执行 stop_command → 等 10s → SIGKILL 强杀 → 标记失败 → 后续 task 不触发
-- **数据归属** — Pipeline 文件是 task 关联唯一权威来源；查询 task 关联了哪些 pipeline 时动态扫描计算
-- **删除保护** — Task 被 pipeline 引用时拒绝删除；Pipeline 运行时拒绝删除；活跃 run 拒绝删除
-- **单文件只读** — 上传的 task 包内容只读，平台不写入用户目录
-- **日志磁盘监控** — 记录每个 run 目录大小，界面展示
-- **结构化日志** — `log/slog` Text 格式，同时输出 stderr 和 `data/orchestrator.log`，支持 `--log-level` 控制级别
-- **日志轮转** — 启动时 + 每 24h 定时轮转：超过 7 天的未压缩日志 gzip 压缩，超过 365 天的 `.gz` 删除
-- **运行事件日志** — 每个 run 目录下 `events.log` 记录 pipeline/task 状态变更，可通过 API 和前端按钮查看
-- **Task 自描述** — 支持 `for-task-orchestrator.txt` 声明 `start:` / `stop:` 命令，上传时自动解析
 
 ## 项目结构
 
@@ -90,9 +238,22 @@ web/
   static/sortable.min.js — SortableJS 1.15.6 (vendored)
 ```
 
+## 日志
+
+- **结构化日志**：`log/slog` Text 格式，同时输出 stderr 和 `data/orchestrator.log`，支持 `--log-level` 控制级别。
+- **日志轮转**：启动时 + 每 24h 定时轮转：超过 7 天的未压缩日志 gzip 压缩，超过 365 天的 `.gz` 删除。
+
 ## 技术栈
 
-- **后端**: Go 纯标准库（net/http、os/exec、archive/tar、encoding/json、html/template、embed）
-- **前端**: 服务端渲染（html/template）+ vanilla JS
-- **拖拽**: SortableJS (vendored)
-- **部署**: 交叉编译单二进制，拷贝即运行
+| 层 | 选型 |
+|---|---|
+| 后端 | Go 纯标准库（`net/http`、`os/exec`、`archive/tar`、`encoding/json`、`html/template`、`embed`） |
+| 前端 | 服务端渲染（`html/template`）+ vanilla JS |
+| 拖拽 | SortableJS 1.15.6，vendor 单个 `.js` 文件进仓库，embed 进二进制 |
+| 部署 | 交叉编译单二进制，拷贝即运行，零运行时依赖 |
+
+## 后续扩展
+
+- 流水线：暂停、恢复、循环执行
+- Task：暂停、恢复、循环执行、超时重试
+- 同一 task 在同一 pipeline 中重复出现的问题（若实际遇到再处理）
