@@ -147,15 +147,25 @@ func (m *Manager) Upload(tarPath string) (*Meta, error) {
 
 	var readmePath string
 	if _, found := parseReadme(dstDir); found {
-		readmePath = "README.md" // actual path will be resolved in ParseReadme
+		readmePath = "README.md"
+	}
+
+	runCmd, stopCmd := "./run.sh", "./stop.sh"
+	if rc, sc := parseTaskDescriptor(dstDir); rc != "" || sc != "" {
+		if rc != "" {
+			runCmd = rc
+		}
+		if sc != "" {
+			stopCmd = sc
+		}
 	}
 
 	meta := &Meta{
 		Name:        name,
 		PackagePath: filepath.Join("tasks", name),
 		UploadedAt:  time.Now().UTC(),
-		RunCommand:  "./run.sh",
-		StopCommand: "./stop.sh",
+		RunCommand:  runCmd,
+		StopCommand: stopCmd,
 		ReadmePath:  readmePath,
 	}
 	if err := m.writeMeta(meta); err != nil {
@@ -206,6 +216,35 @@ func extractTar(tarPath, dst string) error {
 		}
 	}
 	return nil
+}
+
+// parseTaskDescriptor reads for-task-orchestrator.txt and extracts start/stop commands.
+// First matching line wins; duplicates are silently ignored.
+func parseTaskDescriptor(dir string) (runCmd, stopCmd string) {
+	data, err := os.ReadFile(filepath.Join(dir, "for-task-orchestrator.txt"))
+	if err != nil {
+		return "", ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		// Strip inline comment
+		if idx := strings.Index(line, "#"); idx >= 0 {
+			line = strings.TrimSpace(line[:idx])
+			if line == "" {
+				continue
+			}
+		}
+		if rest, ok := strings.CutPrefix(line, "start:"); ok && runCmd == "" {
+			runCmd = strings.TrimSpace(rest)
+		}
+		if rest, ok := strings.CutPrefix(line, "stop:"); ok && stopCmd == "" {
+			stopCmd = strings.TrimSpace(rest)
+		}
+	}
+	return
 }
 
 // readmePriority lists case-insensitive readme candidates in priority order.
@@ -294,6 +333,82 @@ func (m *Manager) All() ([]Meta, error) {
 		tasks = append(tasks, *meta)
 	}
 	return tasks, nil
+}
+
+// Export creates a tar archive of the task's package directory and returns its path.
+// The caller is responsible for removing the temp file after use.
+func (m *Manager) Export(name string) (string, error) {
+	meta, err := m.readMeta(name)
+	if err != nil {
+		return "", fmt.Errorf("task %q not found: %w", name, err)
+	}
+
+	taskDir := filepath.Join(m.tasksDir, name)
+	if _, err := os.Stat(taskDir); err != nil {
+		return "", fmt.Errorf("task package dir not found: %w", err)
+	}
+
+	tmpFile, err := os.CreateTemp("", "task-export-*.tar")
+	if err != nil {
+		return "", fmt.Errorf("create temp file: %w", err)
+	}
+	tw := tar.NewWriter(tmpFile)
+
+	err = filepath.Walk(taskDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(taskDir, path)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil
+		}
+		if strings.Contains(rel, "..") {
+			return nil
+		}
+
+		if !info.Mode().IsRegular() && !info.IsDir() {
+			return nil
+		}
+
+		hdr, err := tar.FileInfoHeader(info, "")
+		if err != nil {
+			return err
+		}
+		hdr.Name = rel
+
+		if err := tw.WriteHeader(hdr); err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+
+		f, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		_, err = io.Copy(tw, f)
+		f.Close()
+		return err
+	})
+
+	closeErr := tw.Close()
+	tmpFile.Close()
+
+	if err != nil {
+		os.Remove(tmpFile.Name())
+		return "", fmt.Errorf("create tar: %w", err)
+	}
+	if closeErr != nil {
+		os.Remove(tmpFile.Name())
+		return "", fmt.Errorf("close tar: %w", closeErr)
+	}
+
+	_ = meta // name validated via readMeta
+	return tmpFile.Name(), nil
 }
 
 // Get returns metadata for a specific task.

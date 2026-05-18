@@ -31,6 +31,8 @@ const api = {
   getRuns(pipelineId) { let url = '/api/runs'; if (pipelineId) url += '?pipeline_id=' + pipelineId; return this.request('GET', url); },
   getRun(id)         { return this.request('GET', '/api/runs/' + id); },
   getRunLog(runId, taskName) { return this.request('GET', '/api/runs/' + runId + '?log=1&task=' + encodeURIComponent(taskName)); },
+  getRunEvents(runId) { return this.request('GET', '/api/runs/' + runId + '/events'); },
+  deleteRun(runId)   { return this.request('DELETE', '/api/runs/' + encodeURIComponent(runId)); },
   getState()         { return this.request('GET', '/api/state'); },
 };
 
@@ -120,6 +122,15 @@ function initTaskDetailButtons() {
       hideTaskDetail();
       renderTaskList();
     } catch (e) { alert('删除失败: ' + e.message); }
+  });
+
+  document.getElementById('task-download-btn').addEventListener('click', () => {
+    const panel = document.getElementById('task-detail');
+    const name = panel.dataset.taskName;
+    const a = document.createElement('a');
+    a.href = '/api/tasks/' + encodeURIComponent(name) + '/download';
+    a.download = name + '.tar';
+    a.click();
   });
 
   document.getElementById('task-close-btn').addEventListener('click', hideTaskDetail);
@@ -339,7 +350,9 @@ async function showRunDetail(runId) {
         ' <button data-run="' + runId + '" data-task="' + inst.task_name + '" class="view-log-btn">日志</button>' +
         '</li>';
     });
-    html += '</ul><button id="close-run-detail">关闭</button>';
+    html += '</ul><button id="show-events-btn" data-run="' + runId + '">事件日志</button> ' +
+      '<button id="delete-run-btn" data-run="' + runId + '">删除</button> ' +
+      '<button id="close-run-detail">关闭</button>';
 
     const div = document.getElementById('run-detail');
     div.innerHTML = html;
@@ -348,6 +361,21 @@ async function showRunDetail(runId) {
     div.querySelectorAll('.view-log-btn').forEach(btn => {
       btn.addEventListener('click', () => showLog(btn.dataset.run, btn.dataset.task));
     });
+    const eventsBtn = div.querySelector('#show-events-btn');
+    if (eventsBtn) {
+      eventsBtn.addEventListener('click', () => showEventsLog(runId));
+    }
+    const deleteBtn = div.querySelector('#delete-run-btn');
+    if (deleteBtn) {
+      deleteBtn.addEventListener('click', async () => {
+        if (!confirm('确定删除 ' + runId + ' 吗？此操作不可撤销。')) return;
+        try {
+          await api.deleteRun(runId);
+          div.style.display = 'none';
+          renderRunHistory();
+        } catch (e) { alert('删除失败: ' + e.message); }
+      });
+    }
   } catch (e) { alert('加载失败: ' + e.message); }
 }
 
@@ -362,6 +390,19 @@ async function showLog(runId, taskName) {
     div.style.display = 'block';
     div.querySelector('#close-log').addEventListener('click', () => { div.style.display = 'none'; });
   } catch (e) { alert('加载日志失败: ' + e.message); }
+}
+
+async function showEventsLog(runId) {
+  try {
+    const data = await api.getRunEvents(runId);
+    const div = document.getElementById('log-viewer');
+    div.innerHTML = '<h3>Run: ' + runId + ' — 事件日志 <button id="close-log">关闭</button></h3>' +
+      '<pre style="background:#1a1a2e;color:#e0e0e0;padding:12px;border-radius:4px;max-height:400px;overflow:auto;">' +
+      escHtml(data.events) +
+      '</pre>';
+    div.style.display = 'block';
+    div.querySelector('#close-log').addEventListener('click', () => { div.style.display = 'none'; });
+  } catch (e) { alert('加载事件日志失败: ' + e.message); }
 }
 
 function escHtml(s) {

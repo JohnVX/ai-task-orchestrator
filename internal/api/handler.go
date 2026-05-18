@@ -40,6 +40,7 @@ func (h *Handler) Router() http.Handler {
 	mux.HandleFunc("GET /api/tasks/{name}", h.handleGetTask)
 	mux.HandleFunc("PUT /api/tasks/{name}", h.handleUpdateTask)
 	mux.HandleFunc("DELETE /api/tasks/{name}", h.handleDeleteTask)
+	mux.HandleFunc("GET /api/tasks/{name}/download", h.handleDownloadTask)
 
 	// Pipeline routes
 	mux.HandleFunc("GET /api/pipelines", h.handleListPipelines)
@@ -53,6 +54,8 @@ func (h *Handler) Router() http.Handler {
 	// Run routes
 	mux.HandleFunc("GET /api/runs", h.handleListRuns)
 	mux.HandleFunc("GET /api/runs/{id}", h.handleGetRun)
+	mux.HandleFunc("GET /api/runs/{id}/events", h.handleGetRunEvents)
+	mux.HandleFunc("DELETE /api/runs/{id}", h.handleDeleteRun)
 
 	// State
 	mux.HandleFunc("GET /api/state", h.handleState)
@@ -173,6 +176,25 @@ func (h *Handler) handleDeleteTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (h *Handler) handleDownloadTask(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	tarPath, err := h.Task.Export(name)
+	if err != nil {
+		msg := err.Error()
+		if strings.Contains(msg, "not found") {
+			writeError(w, http.StatusNotFound, "task not found")
+		} else {
+			writeError(w, http.StatusInternalServerError, msg)
+		}
+		return
+	}
+	defer os.Remove(tarPath)
+
+	w.Header().Set("Content-Type", "application/x-tar")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.tar"`, name))
+	http.ServeFile(w, r, tarPath)
 }
 
 // --- pipeline handlers ---
@@ -386,6 +408,39 @@ func (h *Handler) handleGetRun(w http.ResponseWriter, r *http.Request) {
 		instances = []runner.TaskInstance{}
 	}
 	writeJSON(w, http.StatusOK, instances)
+}
+
+func (h *Handler) handleGetRunEvents(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	content, err := h.Runner.RunEvents(id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	if content == "" {
+		content = "(no events)\n"
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"events": content})
+}
+
+func (h *Handler) handleDeleteRun(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	err := h.Runner.DeleteRun(id)
+	if err == nil {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		return
+	}
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "not found"):
+		writeError(w, http.StatusNotFound, msg)
+	case strings.Contains(msg, "active run"):
+		writeError(w, http.StatusConflict, msg)
+	case strings.Contains(msg, "invalid"):
+		writeError(w, http.StatusBadRequest, msg)
+	default:
+		writeError(w, http.StatusInternalServerError, msg)
+	}
 }
 
 // --- state ---
