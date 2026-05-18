@@ -372,6 +372,9 @@ async function showRunDetail(runId) {
         try {
           await api.deleteRun(runId);
           div.style.display = 'none';
+          clearAutoRefresh();
+          const lv = document.getElementById('log-viewer');
+          if (lv) lv.style.display = 'none';
           renderRunHistory();
         } catch (e) { alert('删除失败: ' + e.message); }
       });
@@ -380,14 +383,24 @@ async function showRunDetail(runId) {
 }
 
 async function showLog(runId, taskName) {
+  clearAutoRefresh();
   const div = document.getElementById('log-viewer');
   div.innerHTML = '<h3>' + taskName + ' — stdout/stderr' +
+    ' <label style="font-weight:normal;font-size:14px;margin-left:12px">' +
+    '<input type="checkbox" id="auto-refresh-toggle"> 自动刷新（每60秒）</label>' +
     ' <button id="refresh-log">刷新</button>' +
     ' <button id="close-log">关闭</button></h3>' +
     '<pre id="log-content" style="background:#1a1a2e;color:#e0e0e0;padding:12px;border-radius:4px;max-height:400px;overflow:auto;">加载中...</pre>';
   div.style.display = 'block';
-  div.querySelector('#close-log').addEventListener('click', () => { div.style.display = 'none'; });
+  div.querySelector('#close-log').addEventListener('click', () => { clearAutoRefresh(); div.style.display = 'none'; });
   div.querySelector('#refresh-log').addEventListener('click', () => fetchLogContent(runId, taskName));
+  div.querySelector('#auto-refresh-toggle').addEventListener('change', function() {
+    if (this.checked) {
+      logAutoRefresh = setInterval(() => fetchLogContent(runId, taskName), 60000);
+    } else {
+      clearAutoRefresh();
+    }
+  });
   fetchLogContent(runId, taskName);
 }
 
@@ -397,19 +410,36 @@ async function fetchLogContent(runId, taskName) {
     const pre = document.getElementById('log-content');
     if (pre) {
       pre.innerHTML = '<strong>stdout:</strong>\n' + escHtml(data.stdout || '(empty)') + '\n\n<strong>stderr:</strong>\n' + escHtml(data.stderr || '(empty)');
+      pre.scrollTop = pre.scrollHeight;
     }
-  } catch (e) { alert('加载日志失败: ' + e.message); }
+  } catch (e) {
+    const pre = document.getElementById('log-content');
+    if (pre) pre.textContent = '加载失败: ' + e.message;
+    const toggle = document.getElementById('auto-refresh-toggle');
+    if (toggle) toggle.checked = false;
+    clearAutoRefresh();
+  }
 }
 
 async function showEventsLog(runId) {
+  clearAutoRefresh();
   const div = document.getElementById('log-viewer');
   div.innerHTML = '<h3>Run: ' + runId + ' — 事件日志' +
+    ' <label style="font-weight:normal;font-size:14px;margin-left:12px">' +
+    '<input type="checkbox" id="auto-refresh-toggle"> 自动刷新（每60秒）</label>' +
     ' <button id="refresh-log">刷新</button>' +
     ' <button id="close-log">关闭</button></h3>' +
     '<pre id="log-content" style="background:#1a1a2e;color:#e0e0e0;padding:12px;border-radius:4px;max-height:400px;overflow:auto;">加载中...</pre>';
   div.style.display = 'block';
-  div.querySelector('#close-log').addEventListener('click', () => { div.style.display = 'none'; });
+  div.querySelector('#close-log').addEventListener('click', () => { clearAutoRefresh(); div.style.display = 'none'; });
   div.querySelector('#refresh-log').addEventListener('click', () => fetchEventsContent(runId));
+  div.querySelector('#auto-refresh-toggle').addEventListener('change', function() {
+    if (this.checked) {
+      logAutoRefresh = setInterval(() => fetchEventsContent(runId), 60000);
+    } else {
+      clearAutoRefresh();
+    }
+  });
   fetchEventsContent(runId);
 }
 
@@ -419,8 +449,21 @@ async function fetchEventsContent(runId) {
     const pre = document.getElementById('log-content');
     if (pre) {
       pre.textContent = data.events;
+      pre.scrollTop = pre.scrollHeight;
     }
-  } catch (e) { alert('加载事件日志失败: ' + e.message); }
+  } catch (e) {
+    const pre = document.getElementById('log-content');
+    if (pre) pre.textContent = '加载失败: ' + e.message;
+    const toggle = document.getElementById('auto-refresh-toggle');
+    if (toggle) toggle.checked = false;
+    clearAutoRefresh();
+  }
+}
+
+let logAutoRefresh = null;
+
+function clearAutoRefresh() {
+  if (logAutoRefresh) { clearInterval(logAutoRefresh); logAutoRefresh = null; }
 }
 
 function escHtml(s) {

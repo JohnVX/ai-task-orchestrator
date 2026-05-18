@@ -244,6 +244,7 @@ web/
 
 - **结构化日志**：`log/slog` Text 格式，同时输出 stderr 和 `data/orchestrator.log`，支持 `--log-level` 控制级别。
 - **日志轮转**：启动时 + 每 24h 定时轮转：超过 7 天的未压缩日志 gzip 压缩，超过 365 天的 `.gz` 删除。
+- **日志查看器**：界面上查看任务 stdout/stderr 和 run 事件日志，支持手动刷新和 60 秒自动刷新（默认关闭）。
 
 ## 技术栈
 
@@ -259,3 +260,7 @@ web/
 - 流水线：暂停、恢复、循环执行
 - Task：暂停、恢复、循环执行、超时重试
 - 同一 task 在同一 pipeline 中重复出现的问题（若实际遇到再处理）
+
+## License
+
+MIT License — 详见 [LICENSE](LICENSE)。Copyright (c) 2026 WangShuWei (JohnVX)
