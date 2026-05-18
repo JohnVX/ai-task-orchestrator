@@ -380,28 +380,46 @@ async function showRunDetail(runId) {
 }
 
 async function showLog(runId, taskName) {
+  const div = document.getElementById('log-viewer');
+  div.innerHTML = '<h3>' + taskName + ' — stdout/stderr' +
+    ' <button id="refresh-log">刷新</button>' +
+    ' <button id="close-log">关闭</button></h3>' +
+    '<pre id="log-content" style="background:#1a1a2e;color:#e0e0e0;padding:12px;border-radius:4px;max-height:400px;overflow:auto;">加载中...</pre>';
+  div.style.display = 'block';
+  div.querySelector('#close-log').addEventListener('click', () => { div.style.display = 'none'; });
+  div.querySelector('#refresh-log').addEventListener('click', () => fetchLogContent(runId, taskName));
+  fetchLogContent(runId, taskName);
+}
+
+async function fetchLogContent(runId, taskName) {
   try {
     const data = await api.getRunLog(runId, taskName);
-    const div = document.getElementById('log-viewer');
-    div.innerHTML = '<h3>' + taskName + ' — stdout/stderr <button id="close-log">关闭</button></h3>' +
-      '<pre style="background:#1a1a2e;color:#e0e0e0;padding:12px;border-radius:4px;max-height:400px;overflow:auto;">' +
-      '<strong>stdout:</strong>\n' + escHtml(data.stdout || '(empty)') + '\n\n<strong>stderr:</strong>\n' + escHtml(data.stderr || '(empty)') +
-      '</pre>';
-    div.style.display = 'block';
-    div.querySelector('#close-log').addEventListener('click', () => { div.style.display = 'none'; });
+    const pre = document.getElementById('log-content');
+    if (pre) {
+      pre.innerHTML = '<strong>stdout:</strong>\n' + escHtml(data.stdout || '(empty)') + '\n\n<strong>stderr:</strong>\n' + escHtml(data.stderr || '(empty)');
+    }
   } catch (e) { alert('加载日志失败: ' + e.message); }
 }
 
 async function showEventsLog(runId) {
+  const div = document.getElementById('log-viewer');
+  div.innerHTML = '<h3>Run: ' + runId + ' — 事件日志' +
+    ' <button id="refresh-log">刷新</button>' +
+    ' <button id="close-log">关闭</button></h3>' +
+    '<pre id="log-content" style="background:#1a1a2e;color:#e0e0e0;padding:12px;border-radius:4px;max-height:400px;overflow:auto;">加载中...</pre>';
+  div.style.display = 'block';
+  div.querySelector('#close-log').addEventListener('click', () => { div.style.display = 'none'; });
+  div.querySelector('#refresh-log').addEventListener('click', () => fetchEventsContent(runId));
+  fetchEventsContent(runId);
+}
+
+async function fetchEventsContent(runId) {
   try {
     const data = await api.getRunEvents(runId);
-    const div = document.getElementById('log-viewer');
-    div.innerHTML = '<h3>Run: ' + runId + ' — 事件日志 <button id="close-log">关闭</button></h3>' +
-      '<pre style="background:#1a1a2e;color:#e0e0e0;padding:12px;border-radius:4px;max-height:400px;overflow:auto;">' +
-      escHtml(data.events) +
-      '</pre>';
-    div.style.display = 'block';
-    div.querySelector('#close-log').addEventListener('click', () => { div.style.display = 'none'; });
+    const pre = document.getElementById('log-content');
+    if (pre) {
+      pre.textContent = data.events;
+    }
   } catch (e) { alert('加载事件日志失败: ' + e.message); }
 }
 
