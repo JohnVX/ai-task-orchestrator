@@ -58,7 +58,10 @@ func main() {
 	runMgr.SetPipelineStatusSetter(pipelineMgr)
 
 	h := api.NewHandler(taskMgr, pipelineMgr, runMgr, absDataDir)
-	h.RecoverOnStartup()
+	if err := h.RecoverOnStartup(); err != nil {
+		slogger.Error("recovery failed", "error", err)
+		os.Exit(1)
+	}
 
 	addr := fmt.Sprintf(":%d", *port)
 	slogger.Info("ai-task-orchestrator starting", "addr", addr, "data", absDataDir)

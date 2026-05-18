@@ -489,8 +489,6 @@ func (h *Handler) handleIndex(w http.ResponseWriter, r *http.Request) {
 }
 
 // RecoverOnStartup is called by main to clean up stale locks.
-func (h *Handler) RecoverOnStartup() {
-	if err := h.Runner.RecoverOnStartup(); err != nil {
-		fmt.Printf("recovery: %v\n", err)
-	}
+func (h *Handler) RecoverOnStartup() error {
+	return h.Runner.RecoverOnStartup()
 }
