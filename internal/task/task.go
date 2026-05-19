@@ -13,12 +13,15 @@ import (
 
 // Meta holds orchestrator-managed metadata for a single task.
 type Meta struct {
-	Name        string    `json:"name"`
-	PackagePath string    `json:"package_path"`
-	UploadedAt  time.Time `json:"uploaded_at"`
-	RunCommand  string    `json:"run_command"`
-	StopCommand string    `json:"stop_command"`
-	ReadmePath  string    `json:"readme_path,omitempty"`
+	Name           string    `json:"name"`
+	PackagePath    string    `json:"package_path"`
+	UploadedAt     time.Time `json:"uploaded_at"`
+	RunCommand     string    `json:"run_command"`
+	StopCommand    string    `json:"stop_command"`
+	ReadmePath     string    `json:"readme_path,omitempty"`
+	TimeoutEnabled bool      `json:"timeout_enabled"`
+	TimeoutSeconds int       `json:"timeout_seconds"`
+	OnTimeout      string    `json:"on_timeout"`
 }
 
 // Manager handles task lifecycle: upload, parse, configure, delete.
@@ -92,12 +95,14 @@ func (m *Manager) Pipelines(name string) ([]string, error) {
 			continue
 		}
 		var p struct {
-			ID    string   `json:"id"`
-			Tasks []string `json:"tasks"`
+			ID    string `json:"id"`
+			Tasks []struct {
+				Name string `json:"name"`
+			} `json:"tasks"`
 		}
 		if json.NewDecoder(f).Decode(&p) == nil {
 			for _, t := range p.Tasks {
-				if t == name {
+				if t.Name == name {
 					ids = append(ids, p.ID)
 					break
 				}
@@ -310,14 +315,17 @@ func (m *Manager) ParseReadme(name string) (content string, found bool) {
 	return parseReadme(dir)
 }
 
-// SetCommands persists run/stop commands for a task.
-func (m *Manager) SetCommands(name, runCmd, stopCmd string) error {
+// SetConfig persists task configuration: commands, timeout settings.
+func (m *Manager) SetConfig(name, runCmd, stopCmd string, timeoutEnabled bool, timeoutSeconds int, onTimeout string) error {
 	meta, err := m.readMeta(name)
 	if err != nil {
 		return fmt.Errorf("task %q not found: %w", name, err)
 	}
 	meta.RunCommand = runCmd
 	meta.StopCommand = stopCmd
+	meta.TimeoutEnabled = timeoutEnabled
+	meta.TimeoutSeconds = timeoutSeconds
+	meta.OnTimeout = onTimeout
 	return m.writeMeta(meta)
 }
 

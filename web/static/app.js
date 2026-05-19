@@ -17,7 +17,15 @@ const api = {
   getTasks()         { return this.request('GET', '/api/tasks'); },
   uploadTask(file)   { const fd = new FormData(); fd.append('file', file); return this.request('POST', '/api/tasks', fd); },
   getTask(name)      { return this.request('GET', '/api/tasks/' + encodeURIComponent(name)); },
-  updateTask(name, runCmd, stopCmd) { return this.request('PUT', '/api/tasks/' + encodeURIComponent(name), { run_command: runCmd, stop_command: stopCmd }); },
+  updateTask(name, runCmd, stopCmd, timeoutEnabled, timeoutSeconds, onTimeout) {
+    return this.request('PUT', '/api/tasks/' + encodeURIComponent(name), {
+      run_command: runCmd,
+      stop_command: stopCmd,
+      timeout_enabled: timeoutEnabled,
+      timeout_seconds: timeoutSeconds,
+      on_timeout: onTimeout,
+    });
+  },
   deleteTask(name)   { return this.request('DELETE', '/api/tasks/' + encodeURIComponent(name)); },
   getPipelines()     { return this.request('GET', '/api/pipelines'); },
   createPipeline(name, schedule) { return this.request('POST', '/api/pipelines', { name, schedule }); },
@@ -89,6 +97,13 @@ async function showTaskDetail(name) {
     panel.querySelector('.task-detail-run-cmd').value = meta.run_command || '';
     panel.querySelector('.task-detail-stop-cmd').value = meta.stop_command || '';
     panel.querySelector('.task-detail-readme').textContent = readme;
+
+    const timeoutEnable = panel.querySelector('.task-detail-timeout-enable');
+    timeoutEnable.checked = meta.timeout_enabled || false;
+    panel.querySelector('.task-detail-timeout-sec').value = meta.timeout_seconds || 30;
+    panel.querySelector('.task-detail-timeout-action').value = meta.on_timeout || 'fail';
+    toggleTimeoutFields(meta.timeout_enabled || false);
+
     panel.style.display = 'block';
     panel.dataset.taskName = name;
   } catch (e) {
@@ -100,17 +115,31 @@ function hideTaskDetail() {
   document.getElementById('task-detail').style.display = 'none';
 }
 
+function toggleTimeoutFields(enabled) {
+  const panel = document.getElementById('task-detail');
+  panel.querySelector('.task-detail-timeout-sec').disabled = !enabled;
+  panel.querySelector('.task-detail-timeout-action').disabled = !enabled;
+}
+
 function initTaskDetailButtons() {
   document.getElementById('task-save-btn').addEventListener('click', async () => {
     const panel = document.getElementById('task-detail');
     const name = panel.dataset.taskName;
     const runCmd = panel.querySelector('.task-detail-run-cmd').value;
     const stopCmd = panel.querySelector('.task-detail-stop-cmd').value;
+    const timeoutEnabled = panel.querySelector('.task-detail-timeout-enable').checked;
+    const timeoutSeconds = parseInt(panel.querySelector('.task-detail-timeout-sec').value, 10) || 0;
+    const onTimeout = panel.querySelector('.task-detail-timeout-action').value;
     try {
-      await api.updateTask(name, runCmd, stopCmd);
+      await api.updateTask(name, runCmd, stopCmd, timeoutEnabled, timeoutSeconds, onTimeout);
       hideTaskDetail();
       renderTaskList();
     } catch (e) { alert('保存失败: ' + e.message); }
+  });
+
+  // Timeout checkbox toggle
+  document.querySelector('.task-detail-timeout-enable').addEventListener('change', function() {
+    toggleTimeoutFields(this.checked);
   });
 
   document.getElementById('task-delete-btn').addEventListener('click', async () => {
@@ -251,13 +280,31 @@ function renderPipelineTasks(pipeline, tasks, runningTask) {
     });
   }
 
+  // Helper to format timeout display
+  function timeoutBadge(task) {
+    const sec = task.timeout_seconds;
+    const action = task.on_timeout;
+    if (sec === null || sec === undefined) return '';
+    if (sec === 0) return ' [已禁用]';
+    const act = action === 'skip' ? '/跳过' : '/失败';
+    return ' [' + sec + 's' + act + ']';
+  }
+
   tasks.forEach(t => {
     const li = document.createElement('li');
-    li.textContent = t.name;
+    const span = document.createElement('span');
+    span.textContent = t.name + timeoutBadge(t);
+    li.appendChild(span);
+
     li.dataset.taskName = t.name;
     if (runningTask && t.name === runningTask) li.classList.add('running');
-    li.title = '双击移除';
-    li.addEventListener('dblclick', async () => {
+
+    const rmBtn = document.createElement('button');
+    rmBtn.textContent = '×';
+    rmBtn.className = 'task-remove-btn';
+    rmBtn.title = '移除';
+    rmBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
       if (confirm('将 "' + t.name + '" 从流水线中移除？')) {
         try {
           await api.removeTask(currentPipelineId, t.name);
@@ -266,9 +313,55 @@ function renderPipelineTasks(pipeline, tasks, runningTask) {
         } catch (e) { alert('移除失败: ' + e.message); }
       }
     });
+    li.appendChild(rmBtn);
+
+    li.addEventListener('click', () => configureTaskTimeout(t));
     ul.appendChild(li);
   });
   initSortable();
+}
+
+function configureTaskTimeout(task) {
+  const currentSec = task.timeout_seconds;
+  const currentAction = task.on_timeout;
+  const secStr = currentSec !== null && currentSec !== undefined ? String(currentSec) : '';
+  const hint = currentSec !== null && currentSec !== undefined
+    ? '当前覆盖: ' + currentSec + 's / ' + (currentAction === 'skip' ? '跳过' : '失败')
+    : '当前: 继承 task 默认';
+  const input = prompt(
+    task.name + ' — 超时设置\n' + hint +
+    '\n\n输入超时秒数（0=禁用超时，留空=继承 task 默认）：',
+    secStr
+  );
+  if (input === null) return;
+  const timeoutSeconds = input === '' ? null : parseInt(input, 10);
+  if (input !== '' && (isNaN(timeoutSeconds) || timeoutSeconds < 0)) {
+    alert('请输入有效的秒数或留空');
+    return;
+  }
+
+  const actionStr = currentAction || '';
+  const actionHint = currentSec !== null && currentSec !== undefined
+    ? '当前覆盖: ' + (currentAction === 'skip' ? '跳过' : '失败')
+    : '当前: 继承 task 默认';
+  const actionInput = prompt(
+    task.name + ' — 超时行为\n' + actionHint +
+    '\n\n输入 fail（失败，阻止流水线）或 skip（跳过，继续执行），留空=继承：',
+    actionStr
+  );
+  if (actionInput === null) return;
+  const onTimeout = actionInput === '' ? null : actionInput;
+  if (onTimeout !== null && onTimeout !== 'skip' && onTimeout !== 'fail') {
+    alert('请输入 fail 或 skip');
+    return;
+  }
+
+  api.request('PUT', '/api/pipelines/' + currentPipelineId, {
+    action: 'set_task_config',
+    task_name: task.name,
+    timeout_seconds: timeoutSeconds,
+    on_timeout: onTimeout,
+  }).then(() => refreshCanvas()).catch(e => alert('设置失败: ' + e.message));
 }
 
 function updateRunButtons(pipeline) {

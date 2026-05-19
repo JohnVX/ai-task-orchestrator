@@ -24,7 +24,16 @@ const (
 	TaskStatusFailed  = "failed"
 	TaskStatusStopped = "stopped"
 	TaskStatusCrashed = "crashed"
+	TaskStatusTimeout = "timeout"
 )
+
+// RunTask describes a task to execute within a pipeline run, with optional
+// timeout overrides. Pointer fields are nil when the task default should be inherited.
+type RunTask struct {
+	Name           string
+	TimeoutSeconds *int    // nil=inherit 0=disable >0=override seconds
+	OnTimeout      *string // nil=inherit "skip" or "fail"
+}
 
 // TaskInstance records the result of a single task execution within a run.
 type TaskInstance struct {
@@ -181,7 +190,7 @@ func (m *Manager) appendEvent(runID, format string, args ...any) {
 // --- public methods ---
 
 // Start begins pipeline execution. Multiple pipelines can run concurrently.
-func (m *Manager) Start(pipelineID string, tasks []string) (runID string, err error) {
+func (m *Manager) Start(pipelineID string, tasks []RunTask) (runID string, err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -198,7 +207,7 @@ func (m *Manager) Start(pipelineID string, tasks []string) (runID string, err er
 	os.MkdirAll(filepath.Join(runDir, "task-data-1"), 0755)
 	os.MkdirAll(filepath.Join(runDir, "task-data-2"), 0755)
 	for _, t := range tasks {
-		os.MkdirAll(filepath.Join(runDir, t), 0755)
+		os.MkdirAll(filepath.Join(runDir, t.Name), 0755)
 	}
 
 		m.stateMu.Lock()
@@ -208,7 +217,7 @@ func (m *Manager) Start(pipelineID string, tasks []string) (runID string, err er
 	}
 	state.RunningPipelines = append(state.RunningPipelines, PipelineRunState{
 		PipelineID:   pipelineID,
-		CurrentTask:  tasks[0],
+		CurrentTask:  tasks[0].Name,
 		CurrentRunID: runID,
 	})
 	if err := m.writeState(state); err != nil {
@@ -229,7 +238,7 @@ func (m *Manager) Start(pipelineID string, tasks []string) (runID string, err er
 	return runID, nil
 }
 
-func (m *Manager) runLoop(pipelineID, runID, runDir string, tasks []string, ctl *runControl) {
+func (m *Manager) runLoop(pipelineID, runID, runDir string, tasks []RunTask, ctl *runControl) {
 	defer func() {
 		m.removeFromState(pipelineID)
 		m.logger.Info("pipeline finished", "pipeline_id", pipelineID, "run_id", runID)
@@ -240,7 +249,9 @@ func (m *Manager) runLoop(pipelineID, runID, runDir string, tasks []string, ctl 
 		m.mu.Unlock()
 	}()
 
-	for i, taskName := range tasks {
+	for i, rt := range tasks {
+		taskName := rt.Name
+
 		select {
 		case <-ctl.stopCh:
 			m.markTask(runDir, taskName, runID, pipelineID, TaskStatusPending, nil)
@@ -317,14 +328,47 @@ func (m *Manager) runLoop(pipelineID, runID, runDir string, tasks []string, ctl 
 			return
 		}
 
+		// Resolve effective timeout: pipeline override > task default > no timeout
+		timeoutSec := 0
+		if rt.TimeoutSeconds != nil {
+			timeoutSec = *rt.TimeoutSeconds
+		} else if meta.TimeoutEnabled {
+			timeoutSec = meta.TimeoutSeconds
+		}
+
+		onTimeout := "fail"
+		if rt.OnTimeout != nil {
+			onTimeout = *rt.OnTimeout
+		} else if meta.OnTimeout != "" {
+			onTimeout = meta.OnTimeout
+		}
+
+		var timeoutCh <-chan time.Time
+		if timeoutSec > 0 {
+			timeoutCh = time.After(time.Duration(timeoutSec) * time.Second)
+		}
+
 		waitDone := make(chan error, 1)
 		go func() { waitDone <- cmd.Wait() }()
 
 		var execErr error
+		var timedOut bool
 		select {
 		case execErr = <-waitDone:
 			// normal completion
 		case <-ctl.stopCh:
+			m.runStopCommand(meta)
+			cmd.Process.Signal(syscall.SIGTERM)
+			select {
+			case execErr = <-waitDone:
+			case <-time.After(10 * time.Second):
+				cmd.Process.Kill()
+				execErr = <-waitDone
+			}
+		case <-timeoutCh:
+			timedOut = true
+			m.logger.Info("task timeout", "run_id", runID, "task", taskName, "timeout_seconds", timeoutSec)
+			m.appendEvent(runID, "%s task=%s event=timeout timeout=%ds", time.Now().UTC().Format(time.RFC3339), taskName, timeoutSec)
 			m.runStopCommand(meta)
 			cmd.Process.Signal(syscall.SIGTERM)
 			select {
@@ -348,10 +392,12 @@ func (m *Manager) runLoop(pipelineID, runID, runDir string, tasks []string, ctl 
 
 		endedAt := time.Now().UTC()
 
-		if execErr != nil {
+		if execErr != nil || timedOut {
 			exitCode := -1
-			if exitErr, ok := execErr.(*exec.ExitError); ok {
-				exitCode = exitErr.ExitCode()
+			if execErr != nil {
+				if exitErr, ok := execErr.(*exec.ExitError); ok {
+					exitCode = exitErr.ExitCode()
+				}
 			}
 			status := TaskStatusFailed
 			select {
@@ -359,9 +405,18 @@ func (m *Manager) runLoop(pipelineID, runID, runDir string, tasks []string, ctl 
 				status = TaskStatusStopped
 			default:
 			}
+			if timedOut && status != TaskStatusStopped {
+				status = TaskStatusTimeout
+			}
 			writeTaskMeta(runDir, taskName, runID, pipelineID, status, &now, &endedAt, exitCode)
 			m.logger.Info("task status changed", "run_id", runID, "task", taskName, "status", status, "exit_code", exitCode)
 			m.appendEvent(runID, "%s task=%s status=%s exit_code=%d", time.Now().UTC().Format(time.RFC3339), taskName, status, exitCode)
+
+			if timedOut && onTimeout == "skip" {
+				m.logger.Info("task timed out but continuing pipeline", "run_id", runID, "task", taskName)
+				m.appendEvent(runID, "%s task=%s event=continuing_on_timeout", time.Now().UTC().Format(time.RFC3339), taskName)
+				continue
+			}
 			return
 		}
 

@@ -155,14 +155,17 @@ func (h *Handler) handleGetTask(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	var body struct {
-		RunCommand  string `json:"run_command"`
-		StopCommand string `json:"stop_command"`
+		RunCommand     string `json:"run_command"`
+		StopCommand    string `json:"stop_command"`
+		TimeoutEnabled bool   `json:"timeout_enabled"`
+		TimeoutSeconds int    `json:"timeout_seconds"`
+		OnTimeout      string `json:"on_timeout"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
-	if err := h.Task.SetCommands(name, body.RunCommand, body.StopCommand); err != nil {
+	if err := h.Task.SetConfig(name, body.RunCommand, body.StopCommand, body.TimeoutEnabled, body.TimeoutSeconds, body.OnTimeout); err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
@@ -245,21 +248,27 @@ func (h *Handler) handleGetPipeline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Enrich tasks with metadata.
+	// Enrich tasks with metadata and pipeline-level timeout overrides.
 	type taskInfo struct {
-		Name     string `json:"name"`
-		RunCmd   string `json:"run_command"`
-		StopCmd  string `json:"stop_command"`
-		Readme   string `json:"readme"`
+		Name           string  `json:"name"`
+		RunCmd         string  `json:"run_command"`
+		StopCmd        string  `json:"stop_command"`
+		Readme         string  `json:"readme"`
+		TimeoutSeconds *int    `json:"timeout_seconds,omitempty"`
+		OnTimeout      *string `json:"on_timeout,omitempty"`
 	}
 	tasks := make([]taskInfo, 0, len(p.Tasks))
-	for _, tname := range p.Tasks {
-		info := taskInfo{Name: tname}
-		if meta, err := h.Task.Get(tname); err == nil {
+	for _, ref := range p.Tasks {
+		info := taskInfo{
+			Name:           ref.Name,
+			TimeoutSeconds: ref.TimeoutSeconds,
+			OnTimeout:      ref.OnTimeout,
+		}
+		if meta, err := h.Task.Get(ref.Name); err == nil {
 			info.RunCmd = meta.RunCommand
 			info.StopCmd = meta.StopCommand
 		}
-		if readme, found := h.Task.ParseReadme(tname); found {
+		if readme, found := h.Task.ParseReadme(ref.Name); found {
 			info.Readme = readme
 		}
 		tasks = append(tasks, info)
@@ -273,10 +282,12 @@ func (h *Handler) handleGetPipeline(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleUpdatePipeline(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var body struct {
-		Action   string   `json:"action"`
-		TaskName string   `json:"task_name"`
-		Tasks    []string `json:"tasks"`
-		Schedule string   `json:"schedule"`
+		Action         string   `json:"action"`
+		TaskName       string   `json:"task_name"`
+		Tasks          []string `json:"tasks"`
+		Schedule       string   `json:"schedule"`
+		TimeoutSeconds *int     `json:"timeout_seconds,omitempty"`
+		OnTimeout      *string  `json:"on_timeout,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
@@ -297,6 +308,12 @@ func (h *Handler) handleUpdatePipeline(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		err = h.Pipeline.SetSchedule(id, body.Schedule)
+	case "set_task_config":
+		if body.TaskName == "" {
+			writeError(w, http.StatusBadRequest, "task_name required")
+			return
+		}
+		err = h.Pipeline.SetTaskConfig(id, body.TaskName, body.TimeoutSeconds, body.OnTimeout)
 	default:
 		writeError(w, http.StatusBadRequest, "unknown action: "+body.Action)
 		return
@@ -334,7 +351,15 @@ func (h *Handler) handleStartPipeline(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "pipeline has no tasks")
 		return
 	}
-	runID, err := h.Runner.Start(id, p.Tasks)
+	runTasks := make([]runner.RunTask, len(p.Tasks))
+	for i, ref := range p.Tasks {
+		runTasks[i] = runner.RunTask{
+			Name:           ref.Name,
+			TimeoutSeconds: ref.TimeoutSeconds,
+			OnTimeout:      ref.OnTimeout,
+		}
+	}
+	runID, err := h.Runner.Start(id, runTasks)
 	if err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return

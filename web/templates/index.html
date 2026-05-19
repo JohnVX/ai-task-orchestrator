@@ -38,6 +38,20 @@
         <input type="text" class="task-detail-run-cmd">
         <label>Stop Command:</label>
         <input type="text" class="task-detail-stop-cmd">
+        <div class="timeout-config">
+          <label class="timeout-label">
+            <input type="checkbox" class="task-detail-timeout-enable"> 启用超时
+          </label>
+          <div class="timeout-fields">
+            <label>超时秒数:</label>
+            <input type="number" class="task-detail-timeout-sec" min="1" value="30" disabled>
+            <label>超时行为:</label>
+            <select class="task-detail-timeout-action" disabled>
+              <option value="fail">失败（阻止流水线）</option>
+              <option value="skip">跳过（继续执行）</option>
+            </select>
+          </div>
+        </div>
         <pre class="task-detail-readme"></pre>
         <button id="task-save-btn">保存</button>
         <button id="task-download-btn">下载</button>

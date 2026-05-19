@@ -17,11 +17,19 @@ const (
 	StatusRunning = "running"
 )
 
+// TaskRef references a task in a pipeline with optional timeout overrides.
+// When pointer fields are nil, the task's default timeout settings are inherited.
+type TaskRef struct {
+	Name           string  `json:"name"`
+	TimeoutSeconds *int    `json:"timeout_seconds,omitempty"` // nil=inherit, 0=disable, >0=seconds
+	OnTimeout      *string `json:"on_timeout,omitempty"`      // nil=inherit
+}
+
 // Pipeline represents a named, ordered sequence of tasks.
 type Pipeline struct {
 	ID        string    `json:"id"`
 	Name      string    `json:"name"`
-	Tasks     []string  `json:"tasks"`
+	Tasks     []TaskRef `json:"tasks"`
 	CreatedAt time.Time `json:"created_at"`
 	Status    string    `json:"status"`
 	Schedule  string    `json:"schedule,omitempty"`
@@ -59,14 +67,35 @@ func (m *Manager) pipelinePath(id string) string {
 }
 
 func (m *Manager) readPipeline(id string) (*Pipeline, error) {
-	f, err := os.Open(m.pipelinePath(id))
+	data, err := os.ReadFile(m.pipelinePath(id))
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
 	var p Pipeline
-	if err := json.NewDecoder(f).Decode(&p); err != nil {
-		return nil, fmt.Errorf("parse pipeline %s: %w", id, err)
+	// Try new format first ([]TaskRef), fall back to old format ([]string)
+	if err := json.Unmarshal(data, &p); err != nil {
+		var old struct {
+			ID        string    `json:"id"`
+			Name      string    `json:"name"`
+			Tasks     []string  `json:"tasks"`
+			CreatedAt time.Time `json:"created_at"`
+			Status    string    `json:"status"`
+			Schedule  string    `json:"schedule,omitempty"`
+		}
+		if err2 := json.Unmarshal(data, &old); err2 != nil {
+			return nil, fmt.Errorf("parse pipeline %s: %w", id, err2)
+		}
+		p.ID = old.ID
+		p.Name = old.Name
+		p.CreatedAt = old.CreatedAt
+		p.Status = old.Status
+		p.Schedule = old.Schedule
+		p.Tasks = make([]TaskRef, len(old.Tasks))
+		for i, t := range old.Tasks {
+			p.Tasks[i] = TaskRef{Name: t}
+		}
+		// Migrate to new format on disk.
+		m.writePipeline(&p)
 	}
 	return &p, nil
 }
@@ -118,7 +147,7 @@ func (m *Manager) Create(name string, schedule string) (*Pipeline, error) {
 	p := &Pipeline{
 		ID:        m.nextID(),
 		Name:      name,
-		Tasks:     []string{},
+		Tasks:     []TaskRef{},
 		CreatedAt: time.Now().UTC(),
 		Status:    StatusIdle,
 		Schedule:  schedule,
@@ -192,7 +221,7 @@ func (m *Manager) AddTask(pipelineID, taskName string) error {
 	if !m.taskMgr.Exists(taskName) {
 		return fmt.Errorf("task %q does not exist", taskName)
 	}
-	p.Tasks = append(p.Tasks, taskName)
+	p.Tasks = append(p.Tasks, TaskRef{Name: taskName})
 	return m.writePipeline(p)
 }
 
@@ -203,7 +232,7 @@ func (m *Manager) RemoveTask(pipelineID, taskName string) error {
 		return err
 	}
 	for i, t := range p.Tasks {
-		if t == taskName {
+		if t.Name == taskName {
 			p.Tasks = append(p.Tasks[:i], p.Tasks[i+1:]...)
 			return m.writePipeline(p)
 		}
@@ -211,13 +240,25 @@ func (m *Manager) RemoveTask(pipelineID, taskName string) error {
 	return nil
 }
 
-// ReorderTasks sets the task list to a new order.
+// ReorderTasks sets the task list to a new order, preserving existing configs.
 func (m *Manager) ReorderTasks(pipelineID string, taskNames []string) error {
 	p, err := m.readPipeline(pipelineID)
 	if err != nil {
 		return err
 	}
-	p.Tasks = taskNames
+	nameToRef := make(map[string]TaskRef, len(p.Tasks))
+	for _, t := range p.Tasks {
+		nameToRef[t.Name] = t
+	}
+	newTasks := make([]TaskRef, 0, len(taskNames))
+	for _, name := range taskNames {
+		if ref, ok := nameToRef[name]; ok {
+			newTasks = append(newTasks, ref)
+		} else {
+			newTasks = append(newTasks, TaskRef{Name: name})
+		}
+	}
+	p.Tasks = newTasks
 	return m.writePipeline(p)
 }
 
@@ -242,6 +283,26 @@ func (m *Manager) SetSchedule(id, schedule string) error {
 	}
 	p.Schedule = schedule
 	return m.writePipeline(p)
+}
+
+// SetTaskConfig updates timeout overrides for a specific task within a pipeline.
+// Pass nil for timeoutSeconds / onTimeout to inherit the task default.
+func (m *Manager) SetTaskConfig(pipelineID, taskName string, timeoutSeconds *int, onTimeout *string) error {
+	p, err := m.readPipeline(pipelineID)
+	if err != nil {
+		return err
+	}
+	if p.Status == StatusRunning {
+		return fmt.Errorf("cannot modify task config while pipeline is running")
+	}
+	for i, t := range p.Tasks {
+		if t.Name == taskName {
+			p.Tasks[i].TimeoutSeconds = timeoutSeconds
+			p.Tasks[i].OnTimeout = onTimeout
+			return m.writePipeline(p)
+		}
+	}
+	return fmt.Errorf("task %q not found in pipeline %s", taskName, pipelineID)
 }
 
 // IsRunning returns true if the pipeline is currently running.

@@ -136,7 +136,15 @@ func runScheduler(pipeMgr *pipeline.Manager, runMgr *runner.Manager, logger *slo
 			lastRun[p.ID] = minuteKey
 
 			logger.Info("scheduled pipeline triggered", "pipeline_id", p.ID, "schedule", p.Schedule)
-			if _, err := runMgr.Start(p.ID, p.Tasks); err != nil {
+			runTasks := make([]runner.RunTask, len(p.Tasks))
+			for i, ref := range p.Tasks {
+				runTasks[i] = runner.RunTask{
+					Name:           ref.Name,
+					TimeoutSeconds: ref.TimeoutSeconds,
+					OnTimeout:      ref.OnTimeout,
+				}
+			}
+			if _, err := runMgr.Start(p.ID, runTasks); err != nil {
 				logger.Error("scheduled pipeline start failed", "pipeline_id", p.ID, "error", err)
 			}
 		}
