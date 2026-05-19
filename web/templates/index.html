@@ -91,5 +91,30 @@
 
 <script src="/static/sortable.min.js"></script>
 <script src="/static/app.js"></script>
+
+<!-- task config modal -->
+<div id="task-config-modal" class="modal-overlay">
+  <div class="modal-card">
+    <h3 id="task-config-title">配置</h3>
+    <label>超时秒数</label>
+    <input type="number" id="task-config-sec" min="0" placeholder="当前实际值: 见输入框">
+    <div class="modal-hint">0 = 禁用超时</div>
+    <label>超时行为</label>
+    <select id="task-config-action">
+      <option value="fail">失败（阻止流水线）</option>
+      <option value="skip">跳过（继续执行）</option>
+    </select>
+    <label>失败时继续流水线</label>
+    <select id="task-config-continue">
+      <option value="true">继续</option>
+      <option value="false">停止</option>
+    </select>
+    <div class="modal-buttons">
+      <button id="task-config-reset" class="danger">重置为默认</button>
+      <button id="task-config-cancel">取消</button>
+      <button id="task-config-confirm" class="primary">确定</button>
+    </div>
+  </div>
+</div>
 </body>
 </html>

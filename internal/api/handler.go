@@ -409,6 +409,7 @@ func (h *Handler) handleListRuns(w http.ResponseWriter, r *http.Request) {
 		PipelineID string `json:"pipeline_id"`
 		TaskCount  int    `json:"task_count"`
 		Size       int64  `json:"size"`
+		Status     string `json:"status"`
 	}
 	var runs []runSummary
 	filterPipeline := r.URL.Query().Get("pipeline_id")
@@ -425,12 +426,15 @@ func (h *Handler) handleListRuns(w http.ResponseWriter, r *http.Request) {
 		if filterPipeline != "" && pipelineID != filterPipeline {
 			continue
 		}
+		// Compute overall run status from task instances.
+		runStatus := computeRunStatus(instances)
 		size, _ := h.Runner.RunDirSize(e.Name())
 		runs = append(runs, runSummary{
 			RunID:      e.Name(),
 			PipelineID: pipelineID,
 			TaskCount:  len(instances),
 			Size:       size,
+			Status:     runStatus,
 		})
 	}
 	if runs == nil {
@@ -552,4 +556,31 @@ func (h *Handler) handleIndex(w http.ResponseWriter, r *http.Request) {
 // RecoverOnStartup is called by main to clean up stale locks.
 func (h *Handler) RecoverOnStartup() error {
 	return h.Runner.RecoverOnStartup()
+}
+
+// computeRunStatus derives the overall run status from its task instances.
+func computeRunStatus(instances []runner.TaskInstance) string {
+	isRunning := false
+	hasFailure := false
+	hasSuccess := false
+	for _, inst := range instances {
+		switch inst.Status {
+		case runner.TaskStatusRunning, runner.TaskStatusPending:
+			isRunning = true
+		case runner.TaskStatusFailed, runner.TaskStatusCrashed, runner.TaskStatusStopped, runner.TaskStatusTimeout:
+			hasFailure = true
+		case runner.TaskStatusSuccess:
+			hasSuccess = true
+		}
+	}
+	if isRunning {
+		return "running"
+	}
+	if hasFailure {
+		return "failed"
+	}
+	if hasSuccess {
+		return "success"
+	}
+	return "unknown"
 }

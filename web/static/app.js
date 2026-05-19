@@ -73,6 +73,9 @@ async function renderTaskList() {
   const ul = document.getElementById('task-list');
   try {
     const tasks = await api.getTasks();
+    // Cache task metas for pipeline task config modal
+    window.taskMetas = {};
+    tasks.forEach(t => { window.taskMetas[t.name] = t; });
     ul.innerHTML = '';
     tasks.forEach(t => {
       const li = document.createElement('li');
@@ -329,67 +332,90 @@ function renderPipelineTasks(pipeline, tasks, runningTask) {
   initSortable();
 }
 
+// -- task config modal --
+
+let currentConfigTask = null;
+
 function configureTask(task) {
-  const currentSec = task.timeout_seconds;
-  const currentAction = task.on_timeout;
-  const secStr = currentSec !== null && currentSec !== undefined ? String(currentSec) : '';
-  const hint = currentSec !== null && currentSec !== undefined
-    ? '当前覆盖: ' + currentSec + 's / ' + (currentAction === 'skip' ? '跳过' : '失败')
-    : '当前: 继承 task 默认';
-  const input = prompt(
-    task.name + ' — 超时设置\n' + hint +
-    '\n\n输入超时秒数（0=禁用超时，留空=继承 task 默认）：',
-    secStr
-  );
-  if (input === null) return;
-  const timeoutSeconds = input === '' ? null : parseInt(input, 10);
-  if (input !== '' && (isNaN(timeoutSeconds) || timeoutSeconds < 0)) {
-    alert('请输入有效的秒数或留空');
-    return;
-  }
+  currentConfigTask = task;
+  const meta = window.taskMetas ? window.taskMetas[task.name] : null;
 
-  const actionStr = currentAction || '';
-  const actionHint = currentSec !== null && currentSec !== undefined
-    ? '当前覆盖: ' + (currentAction === 'skip' ? '跳过' : '失败')
-    : '当前: 继承 task 默认';
-  const actionInput = prompt(
-    task.name + ' — 超时行为\n' + actionHint +
-    '\n\n输入 fail（失败，阻止流水线）或 skip（跳过，继续执行），留空=继承：',
-    actionStr
-  );
-  if (actionInput === null) return;
-  const onTimeout = actionInput === '' ? null : actionInput;
-  if (onTimeout !== null && onTimeout !== 'skip' && onTimeout !== 'fail') {
-    alert('请输入 fail 或 skip');
-    return;
-  }
+  // Resolve effective values: pipeline override > task default > platform default
+  const effSec = (task.timeout_seconds !== null && task.timeout_seconds !== undefined)
+    ? task.timeout_seconds
+    : (meta ? (meta.timeout_enabled ? meta.timeout_seconds : 0) : null);
+  const effAction = task.on_timeout || (meta ? meta.on_timeout : null) || 'fail';
+  const effContinue = task.continue_on_failure !== null && task.continue_on_failure !== undefined
+    ? task.continue_on_failure
+    : (meta ? meta.continue_on_failure : false);
 
-  const curContinue = task.continue_on_failure;
-  const continueHint = curContinue !== null && curContinue !== undefined
-    ? '当前覆盖: ' + (curContinue ? '继续' : '停止')
-    : '当前: 继承 task 默认';
-  const continueInput = prompt(
-    task.name + ' — 失败时继续\n' + continueHint +
-    '\n\n输入 y（失败后继续执行流水线）或 n（失败后停止），留空=继承：',
-    curContinue !== null && curContinue !== undefined ? (curContinue ? 'y' : 'n') : ''
-  );
-  if (continueInput === null) return;
-  let continueOnFailure = null;
-  if (continueInput === 'y') continueOnFailure = true;
-  else if (continueInput === 'n') continueOnFailure = false;
-  else if (continueInput !== '') {
-    alert('请输入 y 或 n');
-    return;
-  }
+  document.getElementById('task-config-title').textContent = task.name;
+  document.getElementById('task-config-sec').value = effSec !== null ? String(effSec) : '30';
+  document.getElementById('task-config-action').value = effAction;
+  document.getElementById('task-config-continue').value = effContinue ? 'true' : 'false';
 
+  document.getElementById('task-config-modal').classList.add('open');
+}
+
+function closeConfigModal() {
+  document.getElementById('task-config-modal').classList.remove('open');
+  currentConfigTask = null;
+}
+
+function resetConfig() {
+  const task = currentConfigTask;
+  if (!task) return;
+  if (!confirm('重置 "' + task.name + '" 的所有覆盖设置？')) return;
+  closeConfigModal();
   api.request('PUT', '/api/pipelines/' + currentPipelineId, {
     action: 'set_task_config',
     task_name: task.name,
-    timeout_seconds: timeoutSeconds,
-    on_timeout: onTimeout,
-    continue_on_failure: continueOnFailure,
+    timeout_seconds: null,
+    on_timeout: null,
+    continue_on_failure: null,
+  }).then(() => refreshCanvas()).catch(e => alert('重置失败: ' + e.message));
+}
+
+function confirmConfig() {
+  const task = currentConfigTask;
+  if (!task) return;
+
+  const secVal = document.getElementById('task-config-sec').value.trim();
+  const actionVal = document.getElementById('task-config-action').value;
+  const continueVal = document.getElementById('task-config-continue').value;
+
+  if (secVal !== '') {
+    const sec = parseInt(secVal, 10);
+    if (isNaN(sec) || sec < 0) {
+      alert('请输入有效的秒数');
+      return;
+    }
+  }
+
+  closeConfigModal();
+  api.request('PUT', '/api/pipelines/' + currentPipelineId, {
+    action: 'set_task_config',
+    task_name: task.name,
+    timeout_seconds: secVal !== '' ? parseInt(secVal, 10) : null,
+    on_timeout: actionVal || null,
+    continue_on_failure: continueVal === 'true' ? true : (continueVal === 'false' ? false : null),
   }).then(() => refreshCanvas()).catch(e => alert('设置失败: ' + e.message));
 }
+
+// Wire modal buttons
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('task-config-cancel').addEventListener('click', closeConfigModal);
+  document.getElementById('task-config-confirm').addEventListener('click', confirmConfig);
+  document.getElementById('task-config-reset').addEventListener('click', resetConfig);
+  // Close on overlay click
+  document.getElementById('task-config-modal').addEventListener('click', (e) => {
+    if (e.target === e.currentTarget) closeConfigModal();
+  });
+  // Enter key in number field triggers confirm
+  document.getElementById('task-config-sec').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') confirmConfig();
+  });
+});
 
 function updateRunButtons(pipeline) {
   const runBtn = document.getElementById('pipeline-run-btn');
@@ -424,9 +450,11 @@ function initSortable() {
       try {
         await api.addTask(currentPipelineId, taskName);
         refreshCanvas();
+        renderTaskList();
       } catch (e) {
         alert('添加失败: ' + e.message);
         refreshCanvas();
+        renderTaskList();
       }
     },
     onUpdate: async function(evt) {
@@ -480,12 +508,35 @@ async function renderRunHistory() {
       table.innerHTML = '<tr><td style="color:#999">暂无运行记录</td></tr>';
       return;
     }
-    table.innerHTML = '<tr><th>Run</th><th>Tasks</th><th>Size</th><th></th></tr>';
+    // Fetch current running state for this pipeline
+    let currentRunId = null;
+    try {
+      const state = await api.getState();
+      if (state && state.running_pipelines) {
+        const rp = state.running_pipelines.find(p => p.pipeline_id === currentPipelineId);
+        if (rp) currentRunId = rp.current_run_id;
+      }
+    } catch (e) { /* ignore */ }
+
+    table.innerHTML = '<tr><th>Run</th><th>状态</th><th>Tasks</th><th>Size</th><th></th></tr>';
     runs.forEach(r => {
       const tr = document.createElement('tr');
+      if (r.run_id === currentRunId) tr.classList.add('run-active');
+      const statusMap = {
+        'running': '运行中',
+        'success': '成功',
+        'failed': '失败',
+        'unknown': '未知',
+      };
+      const statusText = statusMap[r.status] || r.status;
+      const statusColor = r.status === 'running' ? '#1a73e8' :
+                          r.status === 'success' ? '#0d904f' :
+                          r.status === 'failed' ? '#d93025' : '#888';
       const sizeStr = r.size > 1024*1024 ? (r.size/1024/1024).toFixed(1) + 'MB' :
                        r.size > 1024 ? (r.size/1024).toFixed(1) + 'KB' : r.size + 'B';
-      tr.innerHTML = '<td>' + r.run_id + '</td><td>' + r.task_count + '</td><td>' + sizeStr + '</td>' +
+      tr.innerHTML = '<td>' + r.run_id + '</td>' +
+        '<td style="color:' + statusColor + ';font-weight:600">' + statusText + '</td>' +
+        '<td>' + r.task_count + '</td><td>' + sizeStr + '</td>' +
         '<td><button data-run="' + r.run_id + '" class="view-run-btn">查看</button></td>';
       table.appendChild(tr);
     });

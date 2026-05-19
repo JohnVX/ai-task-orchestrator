@@ -48,7 +48,7 @@ footer a:hover {
 
 /* sidebar */
 aside {
-  width: 320px;
+  width: 380px;
   background: #fff;
   border-right: 1px solid #ddd;
   overflow-y: hidden;
@@ -105,13 +105,14 @@ aside section { margin-bottom: 20px; }
   list-style: none;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 24px;
   margin: 16px 0;
-  padding: 16px;
+  padding: 16px 24px;
   background: #fff;
   border-radius: 8px;
   border: 2px dashed #ddd;
   min-height: 80px;
+  flex-wrap: wrap;
 }
 
 #pipeline-task-list li {
@@ -126,12 +127,19 @@ aside section { margin-bottom: 20px; }
 #pipeline-task-list li::after {
   content: "→";
   position: absolute;
-  right: -16px;
+  right: -22px;
   top: 50%;
   transform: translateY(-50%);
-  font-size: 1.2rem;
+  font-size: 1.6rem;
   font-weight: bold;
   color: #4a90d9;
+  text-shadow: 0 0 4px rgba(74,144,217,0.3);
+  background: #f0f6ff;
+  width: 28px;
+  height: 28px;
+  line-height: 28px;
+  text-align: center;
+  border-radius: 50%;
 }
 
 #pipeline-task-list li:last-child::after { content: none; }
@@ -192,6 +200,18 @@ input[type="text"], input[type="file"] {
 }
 
 #run-history-table th { color: #888; font-weight: 500; }
+
+#run-history-table tr.run-active {
+  background: #e8f4fd;
+}
+#run-history-table tr.run-active td:first-child {
+  box-shadow: inset 3px 0 0 0 #4a90d9;
+  animation: run-pulse 2s ease-in-out infinite;
+}
+@keyframes run-pulse {
+  0%, 100% { box-shadow: inset 3px 0 0 0 #4a90d9; }
+  50% { box-shadow: inset 3px 0 0 0 #1a73e8; }
+}
 
 /* task detail */
 #task-detail {
@@ -264,3 +284,56 @@ input[type="text"], input[type="file"] {
   padding: 0 2px;
 }
 .task-remove-btn:hover { color: #d93025; }
+
+/* task config modal */
+.modal-overlay {
+  display: none;
+  position: fixed;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  background: rgba(0,0,0,0.4);
+  z-index: 1000;
+  justify-content: center;
+  align-items: center;
+}
+.modal-overlay.open { display: flex; }
+.modal-card {
+  background: #fff;
+  border-radius: 10px;
+  padding: 24px;
+  width: 400px;
+  max-width: 92vw;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.18);
+}
+.modal-card h3 {
+  font-size: 1rem;
+  margin-bottom: 16px;
+  color: #1a1a2e;
+}
+.modal-card label {
+  display: block;
+  font-size: 0.8rem;
+  color: #666;
+  margin-top: 12px;
+  margin-bottom: 4px;
+}
+.modal-card input[type="number"],
+.modal-card select {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #ccc;
+  border-radius: 5px;
+  font-size: 0.9rem;
+  background: #fff;
+}
+.modal-card .modal-hint {
+  font-size: 0.75rem;
+  color: #999;
+  margin-top: 2px;
+}
+.modal-card .modal-buttons {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 20px;
+}
