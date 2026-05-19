@@ -160,12 +160,13 @@ func (h *Handler) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
 		TimeoutEnabled bool   `json:"timeout_enabled"`
 		TimeoutSeconds int    `json:"timeout_seconds"`
 		OnTimeout      string `json:"on_timeout"`
+		ContinueOnFailure bool   `json:"continue_on_failure"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
-	if err := h.Task.SetConfig(name, body.RunCommand, body.StopCommand, body.TimeoutEnabled, body.TimeoutSeconds, body.OnTimeout); err != nil {
+	if err := h.Task.SetConfig(name, body.RunCommand, body.StopCommand, body.TimeoutEnabled, body.TimeoutSeconds, body.OnTimeout, body.ContinueOnFailure); err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
@@ -256,6 +257,7 @@ func (h *Handler) handleGetPipeline(w http.ResponseWriter, r *http.Request) {
 		Readme         string  `json:"readme"`
 		TimeoutSeconds *int    `json:"timeout_seconds,omitempty"`
 		OnTimeout      *string `json:"on_timeout,omitempty"`
+			ContinueOnFailure *bool   `json:"continue_on_failure,omitempty"`
 	}
 	tasks := make([]taskInfo, 0, len(p.Tasks))
 	for _, ref := range p.Tasks {
@@ -263,6 +265,7 @@ func (h *Handler) handleGetPipeline(w http.ResponseWriter, r *http.Request) {
 			Name:           ref.Name,
 			TimeoutSeconds: ref.TimeoutSeconds,
 			OnTimeout:      ref.OnTimeout,
+			ContinueOnFailure: ref.ContinueOnFailure,
 		}
 		if meta, err := h.Task.Get(ref.Name); err == nil {
 			info.RunCmd = meta.RunCommand
@@ -288,6 +291,7 @@ func (h *Handler) handleUpdatePipeline(w http.ResponseWriter, r *http.Request) {
 		Schedule       string   `json:"schedule"`
 		TimeoutSeconds *int     `json:"timeout_seconds,omitempty"`
 		OnTimeout      *string  `json:"on_timeout,omitempty"`
+		ContinueOnFailure *bool    `json:"continue_on_failure,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
@@ -313,7 +317,7 @@ func (h *Handler) handleUpdatePipeline(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "task_name required")
 			return
 		}
-		err = h.Pipeline.SetTaskConfig(id, body.TaskName, body.TimeoutSeconds, body.OnTimeout)
+		err = h.Pipeline.SetTaskConfig(id, body.TaskName, body.TimeoutSeconds, body.OnTimeout, body.ContinueOnFailure)
 	default:
 		writeError(w, http.StatusBadRequest, "unknown action: "+body.Action)
 		return
@@ -354,9 +358,10 @@ func (h *Handler) handleStartPipeline(w http.ResponseWriter, r *http.Request) {
 	runTasks := make([]runner.RunTask, len(p.Tasks))
 	for i, ref := range p.Tasks {
 		runTasks[i] = runner.RunTask{
-			Name:           ref.Name,
-			TimeoutSeconds: ref.TimeoutSeconds,
-			OnTimeout:      ref.OnTimeout,
+			Name:              ref.Name,
+			TimeoutSeconds:    ref.TimeoutSeconds,
+			OnTimeout:         ref.OnTimeout,
+			ContinueOnFailure: ref.ContinueOnFailure,
 		}
 	}
 	runID, err := h.Runner.Start(id, runTasks)

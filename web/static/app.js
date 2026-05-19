@@ -17,13 +17,14 @@ const api = {
   getTasks()         { return this.request('GET', '/api/tasks'); },
   uploadTask(file)   { const fd = new FormData(); fd.append('file', file); return this.request('POST', '/api/tasks', fd); },
   getTask(name)      { return this.request('GET', '/api/tasks/' + encodeURIComponent(name)); },
-  updateTask(name, runCmd, stopCmd, timeoutEnabled, timeoutSeconds, onTimeout) {
+  updateTask(name, runCmd, stopCmd, timeoutEnabled, timeoutSeconds, onTimeout, continueOnFailure) {
     return this.request('PUT', '/api/tasks/' + encodeURIComponent(name), {
       run_command: runCmd,
       stop_command: stopCmd,
       timeout_enabled: timeoutEnabled,
       timeout_seconds: timeoutSeconds,
       on_timeout: onTimeout,
+      continue_on_failure: continueOnFailure,
     });
   },
   deleteTask(name)   { return this.request('DELETE', '/api/tasks/' + encodeURIComponent(name)); },
@@ -103,6 +104,7 @@ async function showTaskDetail(name) {
     panel.querySelector('.task-detail-timeout-sec').value = meta.timeout_seconds;
     panel.querySelector('.task-detail-timeout-action').value = meta.on_timeout || 'fail';
     toggleTimeoutFields(meta.timeout_enabled || false);
+    panel.querySelector('.task-detail-continue-on-failure').checked = meta.continue_on_failure || false;
 
     panel.style.display = 'block';
     panel.dataset.taskName = name;
@@ -130,8 +132,9 @@ function initTaskDetailButtons() {
     const timeoutEnabled = panel.querySelector('.task-detail-timeout-enable').checked;
     const timeoutSeconds = parseInt(panel.querySelector('.task-detail-timeout-sec').value, 10) || 0;
     const onTimeout = panel.querySelector('.task-detail-timeout-action').value;
+    const continueOnFailure = panel.querySelector('.task-detail-continue-on-failure').checked;
     try {
-      await api.updateTask(name, runCmd, stopCmd, timeoutEnabled, timeoutSeconds, onTimeout);
+      await api.updateTask(name, runCmd, stopCmd, timeoutEnabled, timeoutSeconds, onTimeout, continueOnFailure);
       hideTaskDetail();
       renderTaskList();
     } catch (e) { alert('保存失败: ' + e.message); }
@@ -290,10 +293,15 @@ function renderPipelineTasks(pipeline, tasks, runningTask) {
     return ' [' + sec + 's' + act + ']';
   }
 
+  function continueBadge(task) {
+    if (task.continue_on_failure === true) return ' [继续运行]';
+    return '';
+  }
+
   tasks.forEach(t => {
     const li = document.createElement('li');
     const span = document.createElement('span');
-    span.textContent = t.name + timeoutBadge(t);
+    span.textContent = t.name + timeoutBadge(t) + continueBadge(t);
     li.appendChild(span);
 
     li.dataset.taskName = t.name;
@@ -315,13 +323,13 @@ function renderPipelineTasks(pipeline, tasks, runningTask) {
     });
     li.appendChild(rmBtn);
 
-    li.addEventListener('click', () => configureTaskTimeout(t));
+    li.addEventListener('click', () => configureTask(t));
     ul.appendChild(li);
   });
   initSortable();
 }
 
-function configureTaskTimeout(task) {
+function configureTask(task) {
   const currentSec = task.timeout_seconds;
   const currentAction = task.on_timeout;
   const secStr = currentSec !== null && currentSec !== undefined ? String(currentSec) : '';
@@ -356,11 +364,30 @@ function configureTaskTimeout(task) {
     return;
   }
 
+  const curContinue = task.continue_on_failure;
+  const continueHint = curContinue !== null && curContinue !== undefined
+    ? '当前覆盖: ' + (curContinue ? '继续' : '停止')
+    : '当前: 继承 task 默认';
+  const continueInput = prompt(
+    task.name + ' — 失败时继续\n' + continueHint +
+    '\n\n输入 y（失败后继续执行流水线）或 n（失败后停止），留空=继承：',
+    curContinue !== null && curContinue !== undefined ? (curContinue ? 'y' : 'n') : ''
+  );
+  if (continueInput === null) return;
+  let continueOnFailure = null;
+  if (continueInput === 'y') continueOnFailure = true;
+  else if (continueInput === 'n') continueOnFailure = false;
+  else if (continueInput !== '') {
+    alert('请输入 y 或 n');
+    return;
+  }
+
   api.request('PUT', '/api/pipelines/' + currentPipelineId, {
     action: 'set_task_config',
     task_name: task.name,
     timeout_seconds: timeoutSeconds,
     on_timeout: onTimeout,
+    continue_on_failure: continueOnFailure,
   }).then(() => refreshCanvas()).catch(e => alert('设置失败: ' + e.message));
 }
 

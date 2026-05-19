@@ -17,12 +17,13 @@ const (
 	StatusRunning = "running"
 )
 
-// TaskRef references a task in a pipeline with optional timeout overrides.
-// When pointer fields are nil, the task's default timeout settings are inherited.
+// TaskRef references a task in a pipeline with optional overrides.
+// When pointer fields are nil, the task's default settings are inherited.
 type TaskRef struct {
-	Name           string  `json:"name"`
-	TimeoutSeconds *int    `json:"timeout_seconds,omitempty"` // nil=inherit, 0=disable, >0=seconds
-	OnTimeout      *string `json:"on_timeout,omitempty"`      // nil=inherit
+	Name              string  `json:"name"`
+	TimeoutSeconds    *int    `json:"timeout_seconds,omitempty"`    // nil=inherit, 0=disable, >0=seconds
+	OnTimeout         *string `json:"on_timeout,omitempty"`         // nil=inherit
+	ContinueOnFailure *bool   `json:"continue_on_failure,omitempty"` // nil=inherit
 }
 
 // Pipeline represents a named, ordered sequence of tasks.
@@ -264,10 +265,10 @@ func (m *Manager) SetSchedule(id, schedule string) error {
 	return m.writePipeline(p)
 }
 
-// SetTaskConfig updates timeout overrides for a specific task within a pipeline.
-// Pass nil for timeoutSeconds / onTimeout to inherit the task default.
+// SetTaskConfig updates overrides for a specific task within a pipeline.
+// Pass nil for pointer fields to inherit the task default.
 // onTimeout, when non-nil, must be "skip" or "fail".
-func (m *Manager) SetTaskConfig(pipelineID, taskName string, timeoutSeconds *int, onTimeout *string) error {
+func (m *Manager) SetTaskConfig(pipelineID, taskName string, timeoutSeconds *int, onTimeout *string, continueOnFailure *bool) error {
 	if onTimeout != nil && *onTimeout != "skip" && *onTimeout != "fail" {
 		return fmt.Errorf("on_timeout must be \"skip\", \"fail\", or null to inherit")
 	}
@@ -282,6 +283,7 @@ func (m *Manager) SetTaskConfig(pipelineID, taskName string, timeoutSeconds *int
 		if t.Name == taskName {
 			p.Tasks[i].TimeoutSeconds = timeoutSeconds
 			p.Tasks[i].OnTimeout = onTimeout
+			p.Tasks[i].ContinueOnFailure = continueOnFailure
 			return m.writePipeline(p)
 		}
 	}

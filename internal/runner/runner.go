@@ -28,11 +28,12 @@ const (
 )
 
 // RunTask describes a task to execute within a pipeline run, with optional
-// timeout overrides. Pointer fields are nil when the task default should be inherited.
+// overrides. Pointer fields are nil when the task default should be inherited.
 type RunTask struct {
-	Name           string
-	TimeoutSeconds *int    // nil=inherit 0=disable >0=override seconds
-	OnTimeout      *string // nil=inherit "skip" or "fail"
+	Name              string
+	TimeoutSeconds    *int    // nil=inherit 0=disable >0=override seconds
+	OnTimeout         *string // nil=inherit "skip" or "fail"
+	ContinueOnFailure *bool   // nil=inherit
 }
 
 // TaskInstance records the result of a single task execution within a run.
@@ -343,6 +344,13 @@ func (m *Manager) runLoop(pipelineID, runID, runDir string, tasks []RunTask, ctl
 			onTimeout = meta.OnTimeout
 		}
 
+		continueOnFailure := false
+		if rt.ContinueOnFailure != nil {
+			continueOnFailure = *rt.ContinueOnFailure
+		} else {
+			continueOnFailure = meta.ContinueOnFailure
+		}
+
 		var timeoutCh <-chan time.Time
 		if timeoutSec > 0 {
 			timeoutCh = time.After(time.Duration(timeoutSec) * time.Second)
@@ -415,6 +423,11 @@ func (m *Manager) runLoop(pipelineID, runID, runDir string, tasks []RunTask, ctl
 			if timedOut && onTimeout == "skip" {
 				m.logger.Info("task timed out but continuing pipeline", "run_id", runID, "task", taskName)
 				m.appendEvent(runID, "%s task=%s event=continuing_on_timeout", time.Now().UTC().Format(time.RFC3339), taskName)
+				continue
+			}
+			if continueOnFailure && status != TaskStatusStopped {
+				m.logger.Info("task failed but continuing pipeline", "run_id", runID, "task", taskName, "status", status)
+				m.appendEvent(runID, "%s task=%s event=continuing_on_failure status=%s", time.Now().UTC().Format(time.RFC3339), taskName, status)
 				continue
 			}
 			return

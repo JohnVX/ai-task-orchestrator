@@ -13,15 +13,16 @@ import (
 
 // Meta holds orchestrator-managed metadata for a single task.
 type Meta struct {
-	Name           string    `json:"name"`
-	PackagePath    string    `json:"package_path"`
-	UploadedAt     time.Time `json:"uploaded_at"`
-	RunCommand     string    `json:"run_command"`
-	StopCommand    string    `json:"stop_command"`
-	ReadmePath     string    `json:"readme_path,omitempty"`
-	TimeoutEnabled bool      `json:"timeout_enabled"`
-	TimeoutSeconds int       `json:"timeout_seconds"`
-	OnTimeout      string    `json:"on_timeout"`
+	Name              string    `json:"name"`
+	PackagePath       string    `json:"package_path"`
+	UploadedAt        time.Time `json:"uploaded_at"`
+	RunCommand        string    `json:"run_command"`
+	StopCommand       string    `json:"stop_command"`
+	ReadmePath        string    `json:"readme_path,omitempty"`
+	TimeoutEnabled    bool      `json:"timeout_enabled"`
+	TimeoutSeconds    int       `json:"timeout_seconds"`
+	OnTimeout         string    `json:"on_timeout"`
+	ContinueOnFailure bool      `json:"continue_on_failure"`
 }
 
 // Manager handles task lifecycle: upload, parse, configure, delete.
@@ -315,8 +316,8 @@ func (m *Manager) ParseReadme(name string) (content string, found bool) {
 	return parseReadme(dir)
 }
 
-// SetConfig persists task configuration: commands, timeout settings.
-func (m *Manager) SetConfig(name, runCmd, stopCmd string, timeoutEnabled bool, timeoutSeconds int, onTimeout string) error {
+// SetConfig persists task configuration: commands, timeout, continue-on-failure settings.
+func (m *Manager) SetConfig(name, runCmd, stopCmd string, timeoutEnabled bool, timeoutSeconds int, onTimeout string, continueOnFailure bool) error {
 	meta, err := m.readMeta(name)
 	if err != nil {
 		return fmt.Errorf("task %q not found: %w", name, err)
@@ -326,6 +327,7 @@ func (m *Manager) SetConfig(name, runCmd, stopCmd string, timeoutEnabled bool, t
 	meta.TimeoutEnabled = timeoutEnabled
 	meta.TimeoutSeconds = timeoutSeconds
 	meta.OnTimeout = onTimeout
+	meta.ContinueOnFailure = continueOnFailure
 	return m.writeMeta(meta)
 }
 
