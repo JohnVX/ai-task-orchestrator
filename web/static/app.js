@@ -32,14 +32,14 @@ const api = {
   createPipeline(name, schedule) { return this.request('POST', '/api/pipelines', { name, schedule }); },
   getPipeline(id)    { return this.request('GET', '/api/pipelines/' + id); },
   addTask(id, taskName) { return this.request('PUT', '/api/pipelines/' + id, { action: 'add_task', task_name: taskName }); },
-  removeTask(id, taskName) { return this.request('PUT', '/api/pipelines/' + id, { action: 'remove_task', task_name: taskName }); },
-  reorderTasks(id, tasks) { return this.request('PUT', '/api/pipelines/' + id, { action: 'reorder', tasks }); },
+  removeTask(id, taskIndex) { return this.request('PUT', '/api/pipelines/' + id, { action: 'remove_task', task_index: taskIndex }); },
+  reorderTasks(id, indices) { return this.request('PUT', '/api/pipelines/' + id, { action: 'reorder', task_indices: indices }); },
   deletePipeline(id) { return this.request('DELETE', '/api/pipelines/' + id); },
   startPipeline(id)  { return this.request('POST', '/api/pipelines/' + id + '/start'); },
   stopPipeline(id)   { return this.request('POST', '/api/pipelines/' + id + '/stop'); },
   getRuns(pipelineId) { let url = '/api/runs'; if (pipelineId) url += '?pipeline_id=' + pipelineId; return this.request('GET', url); },
   getRun(id)         { return this.request('GET', '/api/runs/' + id); },
-  getRunLog(runId, taskName) { return this.request('GET', '/api/runs/' + runId + '?log=1&task=' + encodeURIComponent(taskName)); },
+  getRunLog(runId, taskName, taskIdx) { return this.request('GET', '/api/runs/' + runId + '?log=1&task=' + encodeURIComponent(taskName) + '&task_idx=' + taskIdx); },
   getRunEvents(runId) { return this.request('GET', '/api/runs/' + runId + '/events'); },
   deleteRun(runId)   { return this.request('DELETE', '/api/runs/' + encodeURIComponent(runId)); },
   getState()         { return this.request('GET', '/api/state'); },
@@ -286,29 +286,18 @@ function renderPipelineTasks(pipeline, tasks, runningTask) {
     });
   }
 
-  // Helper to format timeout display
-  function timeoutBadge(task) {
-    const sec = task.timeout_seconds;
-    const action = task.on_timeout;
-    if (sec === null || sec === undefined) return '';
-    if (sec === 0) return ' [已禁用]';
-    const act = action === 'skip' ? '/跳过' : '/失败';
-    return ' [' + sec + 's' + act + ']';
-  }
-
-  function continueBadge(task) {
-    if (task.continue_on_failure === true) return ' [继续运行]';
-    return '';
-  }
-
-  tasks.forEach(t => {
+  tasks.forEach((t, idx) => {
     const li = document.createElement('li');
     const span = document.createElement('span');
-    span.textContent = t.name + timeoutBadge(t) + continueBadge(t);
+    span.textContent = t.name;
     li.appendChild(span);
 
     li.dataset.taskName = t.name;
+    li.dataset.taskIndex = idx;
     if (runningTask && t.name === runningTask) li.classList.add('running');
+
+    const isRunning = pipeline.status === 'running';
+    if (isRunning) li.classList.add('pipeline-running');
 
     const rmBtn = document.createElement('button');
     rmBtn.textContent = '×';
@@ -318,7 +307,7 @@ function renderPipelineTasks(pipeline, tasks, runningTask) {
       e.stopPropagation();
       if (confirm('将 "' + t.name + '" 从流水线中移除？')) {
         try {
-          await api.removeTask(currentPipelineId, t.name);
+          await api.removeTask(currentPipelineId, idx);
           refreshCanvas();
           renderRunHistory();
         } catch (e) { alert('移除失败: ' + e.message); }
@@ -326,7 +315,13 @@ function renderPipelineTasks(pipeline, tasks, runningTask) {
     });
     li.appendChild(rmBtn);
 
-    li.addEventListener('click', () => configureTask(t));
+    li.addEventListener('click', () => {
+      if (pipeline.status === 'running') {
+        alert('流水线运行中，无法修改 task 配置');
+        return;
+      }
+      configureTask(t, idx);
+    });
     ul.appendChild(li);
   });
   initSortable();
@@ -335,9 +330,11 @@ function renderPipelineTasks(pipeline, tasks, runningTask) {
 // -- task config modal --
 
 let currentConfigTask = null;
+let currentConfigIndex = -1;
 
-function configureTask(task) {
+function configureTask(task, idx) {
   currentConfigTask = task;
+  currentConfigIndex = idx;
   const meta = window.taskMetas ? window.taskMetas[task.name] : null;
 
   // Resolve effective values: pipeline override > task default > platform default
@@ -360,6 +357,7 @@ function configureTask(task) {
 function closeConfigModal() {
   document.getElementById('task-config-modal').classList.remove('open');
   currentConfigTask = null;
+  currentConfigIndex = -1;
 }
 
 function resetConfig() {
@@ -369,7 +367,7 @@ function resetConfig() {
   closeConfigModal();
   api.request('PUT', '/api/pipelines/' + currentPipelineId, {
     action: 'set_task_config',
-    task_name: task.name,
+    task_index: currentConfigIndex,
     timeout_seconds: null,
     on_timeout: null,
     continue_on_failure: null,
@@ -395,7 +393,7 @@ function confirmConfig() {
   closeConfigModal();
   api.request('PUT', '/api/pipelines/' + currentPipelineId, {
     action: 'set_task_config',
-    task_name: task.name,
+    task_index: currentConfigIndex,
     timeout_seconds: secVal !== '' ? parseInt(secVal, 10) : null,
     on_timeout: actionVal || null,
     continue_on_failure: continueVal === 'true' ? true : (continueVal === 'false' ? false : null),
@@ -407,10 +405,6 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('task-config-cancel').addEventListener('click', closeConfigModal);
   document.getElementById('task-config-confirm').addEventListener('click', confirmConfig);
   document.getElementById('task-config-reset').addEventListener('click', resetConfig);
-  // Close on overlay click
-  document.getElementById('task-config-modal').addEventListener('click', (e) => {
-    if (e.target === e.currentTarget) closeConfigModal();
-  });
   // Enter key in number field triggers confirm
   document.getElementById('task-config-sec').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') confirmConfig();
@@ -458,7 +452,7 @@ function initSortable() {
       }
     },
     onUpdate: async function(evt) {
-      const items = [...evt.from.querySelectorAll('li')].map(li => li.dataset.taskName || li.textContent);
+      const items = [...evt.from.querySelectorAll('li')].map(li => parseInt(li.dataset.taskIndex, 10));
       try {
         await api.reorderTasks(currentPipelineId, items);
       } catch (e) { alert('排序失败: ' + e.message); }
@@ -559,7 +553,7 @@ async function showRunDetail(runId) {
       html += '<li style="margin:4px 0;color:' + color + '">' +
         inst.task_name + ' — ' + inst.status +
         (inst.exit_code !== 0 && inst.exit_code !== -1 ? ' (exit ' + inst.exit_code + ')' : '') +
-        ' <button data-run="' + runId + '" data-task="' + inst.task_name + '" class="view-log-btn">日志</button>' +
+        ' <button data-run="' + runId + '" data-task="' + inst.task_name + '" data-task-idx="' + inst.index + '" class="view-log-btn">日志</button>' +
         '</li>';
     });
     html += '</ul><button id="show-events-btn" data-run="' + runId + '">事件日志</button> ' +
@@ -571,7 +565,7 @@ async function showRunDetail(runId) {
     div.style.display = 'block';
     div.querySelector('#close-run-detail').addEventListener('click', () => { div.style.display = 'none'; });
     div.querySelectorAll('.view-log-btn').forEach(btn => {
-      btn.addEventListener('click', () => showLog(btn.dataset.run, btn.dataset.task));
+      btn.addEventListener('click', () => showLog(btn.dataset.run, btn.dataset.task, parseInt(btn.dataset.taskIdx, 10)));
     });
     const eventsBtn = div.querySelector('#show-events-btn');
     if (eventsBtn) {
@@ -594,7 +588,7 @@ async function showRunDetail(runId) {
   } catch (e) { alert('加载失败: ' + e.message); }
 }
 
-async function showLog(runId, taskName) {
+async function showLog(runId, taskName, taskIdx) {
   clearAutoRefresh();
   const div = document.getElementById('log-viewer');
   div.innerHTML = '<h3>' + taskName + ' — stdout/stderr' +
@@ -605,20 +599,20 @@ async function showLog(runId, taskName) {
     '<pre id="log-content" style="background:#1a1a2e;color:#e0e0e0;padding:12px;border-radius:4px;max-height:400px;overflow:auto;">加载中...</pre>';
   div.style.display = 'block';
   div.querySelector('#close-log').addEventListener('click', () => { clearAutoRefresh(); div.style.display = 'none'; });
-  div.querySelector('#refresh-log').addEventListener('click', () => fetchLogContent(runId, taskName));
+  div.querySelector('#refresh-log').addEventListener('click', () => fetchLogContent(runId, taskName, taskIdx));
   div.querySelector('#auto-refresh-toggle').addEventListener('change', function() {
     if (this.checked) {
-      logAutoRefresh = setInterval(() => fetchLogContent(runId, taskName), 30000);
+      logAutoRefresh = setInterval(() => fetchLogContent(runId, taskName, taskIdx), 30000);
     } else {
       clearAutoRefresh();
     }
   });
-  fetchLogContent(runId, taskName);
+  fetchLogContent(runId, taskName, taskIdx);
 }
 
-async function fetchLogContent(runId, taskName) {
+async function fetchLogContent(runId, taskName, taskIdx) {
   try {
-    const data = await api.getRunLog(runId, taskName);
+    const data = await api.getRunLog(runId, taskName, taskIdx);
     const pre = document.getElementById('log-content');
     if (pre) {
       pre.innerHTML = '<strong>stdout:</strong>\n' + escHtml(data.stdout || '(empty)') + '\n\n<strong>stderr:</strong>\n' + escHtml(data.stderr || '(empty)');

@@ -205,38 +205,34 @@ func (m *Manager) AddTask(pipelineID, taskName string) error {
 	return m.writePipeline(p)
 }
 
-// RemoveTask removes a task from the pipeline's task list.
-func (m *Manager) RemoveTask(pipelineID, taskName string) error {
+// RemoveTask removes a task from the pipeline's task list by its index.
+func (m *Manager) RemoveTask(pipelineID string, taskIndex int) error {
 	p, err := m.readPipeline(pipelineID)
 	if err != nil {
 		return err
 	}
-	for i, t := range p.Tasks {
-		if t.Name == taskName {
-			p.Tasks = append(p.Tasks[:i], p.Tasks[i+1:]...)
-			return m.writePipeline(p)
-		}
+	if taskIndex < 0 || taskIndex >= len(p.Tasks) {
+		return fmt.Errorf("invalid task index %d", taskIndex)
 	}
-	return nil
+	p.Tasks = append(p.Tasks[:taskIndex], p.Tasks[taskIndex+1:]...)
+	return m.writePipeline(p)
 }
 
-// ReorderTasks sets the task list to a new order, preserving existing configs.
-func (m *Manager) ReorderTasks(pipelineID string, taskNames []string) error {
+// ReorderTasks sets the task list to a new order using old indices, preserving configs.
+func (m *Manager) ReorderTasks(pipelineID string, indices []int) error {
 	p, err := m.readPipeline(pipelineID)
 	if err != nil {
 		return err
 	}
-	nameToRef := make(map[string]TaskRef, len(p.Tasks))
-	for _, t := range p.Tasks {
-		nameToRef[t.Name] = t
-	}
-	newTasks := make([]TaskRef, 0, len(taskNames))
-	for _, name := range taskNames {
-		if ref, ok := nameToRef[name]; ok {
-			newTasks = append(newTasks, ref)
-		} else {
-			newTasks = append(newTasks, TaskRef{Name: name})
+	oldTasks := p.Tasks
+	newTasks := make([]TaskRef, 0, len(indices))
+	for _, idx := range indices {
+		if idx >= 0 && idx < len(oldTasks) {
+			newTasks = append(newTasks, oldTasks[idx])
 		}
+	}
+	if len(newTasks) != len(oldTasks) {
+		return fmt.Errorf("reorder resulted in mismatched task count")
 	}
 	p.Tasks = newTasks
 	return m.writePipeline(p)
@@ -268,7 +264,7 @@ func (m *Manager) SetSchedule(id, schedule string) error {
 // SetTaskConfig updates overrides for a specific task within a pipeline.
 // Pass nil for pointer fields to inherit the task default.
 // onTimeout, when non-nil, must be "skip" or "fail".
-func (m *Manager) SetTaskConfig(pipelineID, taskName string, timeoutSeconds *int, onTimeout *string, continueOnFailure *bool) error {
+func (m *Manager) SetTaskConfig(pipelineID string, taskIndex int, timeoutSeconds *int, onTimeout *string, continueOnFailure *bool) error {
 	if onTimeout != nil && *onTimeout != "skip" && *onTimeout != "fail" {
 		return fmt.Errorf("on_timeout must be \"skip\", \"fail\", or null to inherit")
 	}
@@ -279,15 +275,13 @@ func (m *Manager) SetTaskConfig(pipelineID, taskName string, timeoutSeconds *int
 	if p.Status == StatusRunning {
 		return fmt.Errorf("cannot modify task config while pipeline is running")
 	}
-	for i, t := range p.Tasks {
-		if t.Name == taskName {
-			p.Tasks[i].TimeoutSeconds = timeoutSeconds
-			p.Tasks[i].OnTimeout = onTimeout
-			p.Tasks[i].ContinueOnFailure = continueOnFailure
-			return m.writePipeline(p)
-		}
+	if taskIndex < 0 || taskIndex >= len(p.Tasks) {
+		return fmt.Errorf("invalid task index %d", taskIndex)
 	}
-	return fmt.Errorf("task %q not found in pipeline %s", taskName, pipelineID)
+	p.Tasks[taskIndex].TimeoutSeconds = timeoutSeconds
+	p.Tasks[taskIndex].OnTimeout = onTimeout
+	p.Tasks[taskIndex].ContinueOnFailure = continueOnFailure
+	return m.writePipeline(p)
 }
 
 // IsRunning returns true if the pipeline is currently running.

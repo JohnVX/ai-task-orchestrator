@@ -154,6 +154,11 @@ aside section { margin-bottom: 20px; }
   animation: task-running 1.8s ease-in-out infinite;
 }
 
+#pipeline-task-list li.pipeline-running {
+  cursor: not-allowed;
+  opacity: 0.85;
+}
+
 /* toolbar */
 #pipeline-toolbar {
   display: flex;

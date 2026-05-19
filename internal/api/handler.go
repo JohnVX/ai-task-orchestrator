@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"strconv"
 	"io"
 	"net/http"
 	"os"
@@ -287,6 +288,8 @@ func (h *Handler) handleUpdatePipeline(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Action         string   `json:"action"`
 		TaskName       string   `json:"task_name"`
+		TaskIndex      int      `json:"task_index"`
+		TaskIndices    []int    `json:"task_indices"`
 		Tasks          []string `json:"tasks"`
 		Schedule       string   `json:"schedule"`
 		TimeoutSeconds *int     `json:"timeout_seconds,omitempty"`
@@ -303,9 +306,9 @@ func (h *Handler) handleUpdatePipeline(w http.ResponseWriter, r *http.Request) {
 	case "add_task":
 		err = h.Pipeline.AddTask(id, body.TaskName)
 	case "remove_task":
-		err = h.Pipeline.RemoveTask(id, body.TaskName)
+		err = h.Pipeline.RemoveTask(id, body.TaskIndex)
 	case "reorder":
-		err = h.Pipeline.ReorderTasks(id, body.Tasks)
+		err = h.Pipeline.ReorderTasks(id, body.TaskIndices)
 	case "set_schedule":
 		if body.Schedule != "" && !runner.ValidCron(body.Schedule) {
 			writeError(w, http.StatusBadRequest, "invalid cron expression")
@@ -313,11 +316,7 @@ func (h *Handler) handleUpdatePipeline(w http.ResponseWriter, r *http.Request) {
 		}
 		err = h.Pipeline.SetSchedule(id, body.Schedule)
 	case "set_task_config":
-		if body.TaskName == "" {
-			writeError(w, http.StatusBadRequest, "task_name required")
-			return
-		}
-		err = h.Pipeline.SetTaskConfig(id, body.TaskName, body.TimeoutSeconds, body.OnTimeout, body.ContinueOnFailure)
+		err = h.Pipeline.SetTaskConfig(id, body.TaskIndex, body.TimeoutSeconds, body.OnTimeout, body.ContinueOnFailure)
 	default:
 		writeError(w, http.StatusBadRequest, "unknown action: "+body.Action)
 		return
@@ -452,7 +451,9 @@ func (h *Handler) handleGetRun(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "task parameter required for logs")
 			return
 		}
-		stdout, stderr, err := h.Runner.RunLog(id, taskName)
+			taskIdxStr := r.URL.Query().Get("task_idx")
+			taskIdx, _ := strconv.Atoi(taskIdxStr)
+			stdout, stderr, err := h.Runner.RunLog(id, taskName, taskIdx)
 		if err != nil {
 			writeError(w, http.StatusNotFound, err.Error())
 			return
