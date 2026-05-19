@@ -100,7 +100,7 @@ async function showTaskDetail(name) {
 
     const timeoutEnable = panel.querySelector('.task-detail-timeout-enable');
     timeoutEnable.checked = meta.timeout_enabled || false;
-    panel.querySelector('.task-detail-timeout-sec').value = meta.timeout_seconds || 30;
+    panel.querySelector('.task-detail-timeout-sec').value = meta.timeout_seconds;
     panel.querySelector('.task-detail-timeout-action').value = meta.on_timeout || 'fail';
     toggleTimeoutFields(meta.timeout_enabled || false);
 
@@ -476,7 +476,7 @@ async function showRunDetail(runId) {
     let html = '<h3>Run: ' + runId + '</h3><ul style="list-style:none;margin:8px 0">';
     instances.forEach(inst => {
       const color = inst.status === 'success' ? 'green' :
-                    inst.status === 'failed' || inst.status === 'crashed' ? 'red' :
+                    inst.status === 'failed' || inst.status === 'crashed' || inst.status === 'timeout' ? 'red' :
                     inst.status === 'running' ? 'blue' : '#888';
       html += '<li style="margin:4px 0;color:' + color + '">' +
         inst.task_name + ' — ' + inst.status +

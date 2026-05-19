@@ -67,35 +67,14 @@ func (m *Manager) pipelinePath(id string) string {
 }
 
 func (m *Manager) readPipeline(id string) (*Pipeline, error) {
-	data, err := os.ReadFile(m.pipelinePath(id))
+	f, err := os.Open(m.pipelinePath(id))
 	if err != nil {
 		return nil, err
 	}
+	defer f.Close()
 	var p Pipeline
-	// Try new format first ([]TaskRef), fall back to old format ([]string)
-	if err := json.Unmarshal(data, &p); err != nil {
-		var old struct {
-			ID        string    `json:"id"`
-			Name      string    `json:"name"`
-			Tasks     []string  `json:"tasks"`
-			CreatedAt time.Time `json:"created_at"`
-			Status    string    `json:"status"`
-			Schedule  string    `json:"schedule,omitempty"`
-		}
-		if err2 := json.Unmarshal(data, &old); err2 != nil {
-			return nil, fmt.Errorf("parse pipeline %s: %w", id, err2)
-		}
-		p.ID = old.ID
-		p.Name = old.Name
-		p.CreatedAt = old.CreatedAt
-		p.Status = old.Status
-		p.Schedule = old.Schedule
-		p.Tasks = make([]TaskRef, len(old.Tasks))
-		for i, t := range old.Tasks {
-			p.Tasks[i] = TaskRef{Name: t}
-		}
-		// Migrate to new format on disk.
-		m.writePipeline(&p)
+	if err := json.NewDecoder(f).Decode(&p); err != nil {
+		return nil, fmt.Errorf("parse pipeline %s: %w", id, err)
 	}
 	return &p, nil
 }
@@ -287,7 +266,11 @@ func (m *Manager) SetSchedule(id, schedule string) error {
 
 // SetTaskConfig updates timeout overrides for a specific task within a pipeline.
 // Pass nil for timeoutSeconds / onTimeout to inherit the task default.
+// onTimeout, when non-nil, must be "skip" or "fail".
 func (m *Manager) SetTaskConfig(pipelineID, taskName string, timeoutSeconds *int, onTimeout *string) error {
+	if onTimeout != nil && *onTimeout != "skip" && *onTimeout != "fail" {
+		return fmt.Errorf("on_timeout must be \"skip\", \"fail\", or null to inherit")
+	}
 	p, err := m.readPipeline(pipelineID)
 	if err != nil {
 		return err
