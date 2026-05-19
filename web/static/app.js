@@ -20,7 +20,7 @@ const api = {
   updateTask(name, runCmd, stopCmd) { return this.request('PUT', '/api/tasks/' + encodeURIComponent(name), { run_command: runCmd, stop_command: stopCmd }); },
   deleteTask(name)   { return this.request('DELETE', '/api/tasks/' + encodeURIComponent(name)); },
   getPipelines()     { return this.request('GET', '/api/pipelines'); },
-  createPipeline(name) { return this.request('POST', '/api/pipelines', { name }); },
+  createPipeline(name, schedule) { return this.request('POST', '/api/pipelines', { name, schedule }); },
   getPipeline(id)    { return this.request('GET', '/api/pipelines/' + id); },
   addTask(id, taskName) { return this.request('PUT', '/api/pipelines/' + id, { action: 'add_task', task_name: taskName }); },
   removeTask(id, taskName) { return this.request('PUT', '/api/pipelines/' + id, { action: 'remove_task', task_name: taskName }); },
@@ -170,12 +170,14 @@ async function renderPipelineList() {
 
 function initPipelineCreate() {
   document.getElementById('pipeline-create-btn').addEventListener('click', async () => {
-    const input = document.getElementById('pipeline-name');
-    const name = input.value.trim();
+    const nameInput = document.getElementById('pipeline-name');
+    const name = nameInput.value.trim();
     if (!name) return;
+    const schedule = document.getElementById('pipeline-schedule').value.trim() || undefined;
     try {
-      await api.createPipeline(name);
-      input.value = '';
+      await api.createPipeline(name, schedule);
+      nameInput.value = '';
+      document.getElementById('pipeline-schedule').value = '';
       renderPipelineList();
     } catch (e) { alert('创建失败: ' + e.message); }
   });
@@ -185,6 +187,9 @@ function initPipelineCreate() {
 
 async function selectPipeline(id) {
   currentPipelineId = id;
+  clearAutoRefresh();
+  document.getElementById('run-detail').style.display = 'none';
+  document.getElementById('log-viewer').style.display = 'none';
   renderPipelineList();
   refreshCanvas();
   renderRunHistory();
@@ -200,21 +205,57 @@ async function refreshCanvas() {
   document.getElementById('canvas-content').style.display = 'block';
 
   try {
-    const data = await api.getPipeline(currentPipelineId);
-    renderPipelineTasks(data.pipeline, data.tasks);
+    const [data, state] = await Promise.all([
+      api.getPipeline(currentPipelineId),
+      api.getState(),
+    ]);
+    let runningTask = null;
+    if (state && state.running_pipelines) {
+      const rp = state.running_pipelines.find(p => p.pipeline_id === currentPipelineId);
+      if (rp) runningTask = rp.current_task;
+    }
+    renderPipelineTasks(data.pipeline, data.tasks, runningTask);
     updateRunButtons(data.pipeline);
   } catch (e) {
     document.getElementById('pipeline-task-list').innerHTML = '<li>加载失败</li>';
   }
 }
 
-function renderPipelineTasks(pipeline, tasks) {
+function renderPipelineTasks(pipeline, tasks, runningTask) {
   const ul = document.getElementById('pipeline-task-list');
   ul.innerHTML = '';
+  // Show schedule info
+  const scheduleInfo = document.getElementById('pipeline-schedule-info');
+  if (pipeline.schedule) {
+    scheduleInfo.innerHTML = '⏰ ' + pipeline.schedule +
+      (pipeline.status !== 'running'
+        ? ' <a href="#" id="schedule-edit" style="font-size:0.8rem;color:#1a73e8;text-decoration:none">[修改]</a>'
+        : '');
+    scheduleInfo.style.display = 'block';
+  } else if (pipeline.status !== 'running') {
+    scheduleInfo.innerHTML = '<a href="#" id="schedule-edit" style="font-size:0.8rem;color:#1a73e8;text-decoration:none">添加定时执行</a>';
+    scheduleInfo.style.display = 'block';
+  } else {
+    scheduleInfo.style.display = 'none';
+  }
+  const editLink = document.getElementById('schedule-edit');
+  if (editLink) {
+    editLink.addEventListener('click', (e) => {
+      e.preventDefault();
+      const newSchedule = prompt('输入 cron 表达式（留空取消定时）：', pipeline.schedule || '');
+      if (newSchedule === null) return;
+      api.request('PUT', '/api/pipelines/' + currentPipelineId, {
+        action: 'set_schedule',
+        schedule: newSchedule,
+      }).then(() => refreshCanvas()).catch(e => alert('修改失败: ' + e.message));
+    });
+  }
+
   tasks.forEach(t => {
     const li = document.createElement('li');
     li.textContent = t.name;
     li.dataset.taskName = t.name;
+    if (runningTask && t.name === runningTask) li.classList.add('running');
     li.title = '双击移除';
     li.addEventListener('dblclick', async () => {
       if (confirm('将 "' + t.name + '" 从流水线中移除？')) {
@@ -387,7 +428,7 @@ async function showLog(runId, taskName) {
   const div = document.getElementById('log-viewer');
   div.innerHTML = '<h3>' + taskName + ' — stdout/stderr' +
     ' <label style="font-weight:normal;font-size:14px;margin-left:12px">' +
-    '<input type="checkbox" id="auto-refresh-toggle"> 自动刷新（每60秒）</label>' +
+    '<input type="checkbox" id="auto-refresh-toggle"> 自动刷新（每30秒）</label>' +
     ' <button id="refresh-log">刷新</button>' +
     ' <button id="close-log">关闭</button></h3>' +
     '<pre id="log-content" style="background:#1a1a2e;color:#e0e0e0;padding:12px;border-radius:4px;max-height:400px;overflow:auto;">加载中...</pre>';
@@ -396,7 +437,7 @@ async function showLog(runId, taskName) {
   div.querySelector('#refresh-log').addEventListener('click', () => fetchLogContent(runId, taskName));
   div.querySelector('#auto-refresh-toggle').addEventListener('change', function() {
     if (this.checked) {
-      logAutoRefresh = setInterval(() => fetchLogContent(runId, taskName), 60000);
+      logAutoRefresh = setInterval(() => fetchLogContent(runId, taskName), 30000);
     } else {
       clearAutoRefresh();
     }

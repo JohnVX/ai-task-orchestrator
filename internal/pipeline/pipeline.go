@@ -24,6 +24,7 @@ type Pipeline struct {
 	Tasks     []string  `json:"tasks"`
 	CreatedAt time.Time `json:"created_at"`
 	Status    string    `json:"status"`
+	Schedule  string    `json:"schedule,omitempty"`
 }
 
 // TaskChecker is the interface pipeline needs from the task package.
@@ -103,7 +104,7 @@ func (m *Manager) nextID() string {
 // --- public methods ---
 
 // Create writes a new pipeline definition.
-func (m *Manager) Create(name string) (*Pipeline, error) {
+func (m *Manager) Create(name string, schedule string) (*Pipeline, error) {
 	all, err := m.All()
 	if err != nil {
 		return nil, err
@@ -120,6 +121,7 @@ func (m *Manager) Create(name string) (*Pipeline, error) {
 		Tasks:     []string{},
 		CreatedAt: time.Now().UTC(),
 		Status:    StatusIdle,
+		Schedule:  schedule,
 	}
 	if err := m.writePipeline(p); err != nil {
 		return nil, err
@@ -222,6 +224,19 @@ func (m *Manager) SetStatus(id, status string) error {
 		return err
 	}
 	p.Status = status
+	return m.writePipeline(p)
+}
+
+// SetSchedule updates the cron schedule for a pipeline. Empty string disables scheduling.
+func (m *Manager) SetSchedule(id, schedule string) error {
+	p, err := m.readPipeline(id)
+	if err != nil {
+		return err
+	}
+	if p.Status == StatusRunning {
+		return fmt.Errorf("cannot modify schedule while pipeline is running")
+	}
+	p.Schedule = schedule
 	return m.writePipeline(p)
 }
 

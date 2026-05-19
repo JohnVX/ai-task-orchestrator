@@ -72,6 +72,7 @@ type Manager struct {
 	logger         *slog.Logger
 
 	mu      sync.Mutex
+	stateMu sync.Mutex
 	running map[string]*runControl // pipelineID → control
 }
 
@@ -123,16 +124,20 @@ func (m *Manager) clearState() {
 	os.Remove(m.statePath())
 }
 
-func (m *Manager) nextRunID() string {
+func (m *Manager) nextRunID(pipelineID string) string {
 	entries, _ := os.ReadDir(m.runsDir)
+	prefix := "run-" + pipelineID + "-"
 	maxN := 0
 	for _, e := range entries {
-		rest := strings.TrimPrefix(e.Name(), "run-")
+		if !strings.HasPrefix(e.Name(), prefix) {
+			continue
+		}
+		rest := strings.TrimPrefix(e.Name(), prefix)
 		if n, err := strconv.Atoi(rest); err == nil && n > maxN {
 			maxN = n
 		}
 	}
-	return fmt.Sprintf("run-%03d", maxN+1)
+	return fmt.Sprintf("%s%03d", prefix, maxN+1)
 }
 
 func clearDir(path string) error {
@@ -183,8 +188,11 @@ func (m *Manager) Start(pipelineID string, tasks []string) (runID string, err er
 	if _, exists := m.running[pipelineID]; exists {
 		return "", fmt.Errorf("pipeline %q is already running", pipelineID)
 	}
+	if len(tasks) == 0 {
+		return "", fmt.Errorf("pipeline %q has no tasks", pipelineID)
+	}
 
-	runID = m.nextRunID()
+	runID = m.nextRunID(pipelineID)
 	runDir := filepath.Join(m.runsDir, runID)
 
 	os.MkdirAll(filepath.Join(runDir, "task-data-1"), 0755)
@@ -193,6 +201,7 @@ func (m *Manager) Start(pipelineID string, tasks []string) (runID string, err er
 		os.MkdirAll(filepath.Join(runDir, t), 0755)
 	}
 
+		m.stateMu.Lock()
 	state, _ := m.readState()
 	if state.PID == 0 {
 		state.PID = os.Getpid()
@@ -203,8 +212,10 @@ func (m *Manager) Start(pipelineID string, tasks []string) (runID string, err er
 		CurrentRunID: runID,
 	})
 	if err := m.writeState(state); err != nil {
+		m.stateMu.Unlock()
 		return "", fmt.Errorf("write state: %w", err)
 	}
+	m.stateMu.Unlock()
 
 	m.pipelineStatus.SetStatus(pipelineID, "running")
 	m.logger.Info("pipeline started", "pipeline_id", pipelineID, "run_id", runID)
@@ -379,6 +390,8 @@ func (m *Manager) runStopCommand(meta *task.Meta) {
 }
 
 func (m *Manager) updateState(pipelineID, taskName, runID string) {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
 	state, _ := m.readState()
 	for i, rp := range state.RunningPipelines {
 		if rp.PipelineID == pipelineID {
@@ -424,6 +437,8 @@ func (m *Manager) IsRunning(pipelineID string) bool {
 
 // State returns the current orchestrator global state.
 func (m *Manager) State() (*OrchestratorState, error) {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
 	return m.readState()
 }
 
@@ -478,6 +493,8 @@ func (m *Manager) RunEvents(runID string) (string, error) {
 // removeFromState removes a single pipeline from the persisted state.
 // If no running pipelines remain, the state file is deleted.
 func (m *Manager) removeFromState(pipelineID string) {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
 	state, _ := m.readState()
 	if state == nil {
 		return

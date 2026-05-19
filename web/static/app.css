@@ -48,7 +48,7 @@ footer a:hover {
 
 /* sidebar */
 aside {
-  width: 260px;
+  width: 320px;
   background: #fff;
   border-right: 1px solid #ddd;
   overflow-y: hidden;
@@ -105,7 +105,7 @@ aside section { margin-bottom: 20px; }
   list-style: none;
   display: flex;
   align-items: center;
-  gap: 0;
+  gap: 8px;
   margin: 16px 0;
   padding: 16px;
   background: #fff;
@@ -116,19 +116,35 @@ aside section { margin-bottom: 20px; }
 
 #pipeline-task-list li {
   background: #e8f0fe;
-  padding: 10px 16px;
+  padding: 12px 20px;
   border-radius: 6px;
   cursor: grab;
   font-size: 0.9rem;
+  position: relative;
 }
 
 #pipeline-task-list li::after {
   content: "→";
-  margin-left: 12px;
-  color: #aaa;
+  position: absolute;
+  right: -16px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 1.2rem;
+  font-weight: bold;
+  color: #4a90d9;
 }
 
 #pipeline-task-list li:last-child::after { content: none; }
+
+/* running task highlight */
+@keyframes task-running {
+  0%, 100% { box-shadow: inset 0 0 0 2px #4a90d9, 0 0 6px rgba(74,144,217,0.3); }
+  50% { box-shadow: inset 0 0 0 2px #4a90d9, 0 0 12px rgba(74,144,217,0.6); }
+}
+#pipeline-task-list li.running {
+  background: #d4e4fc;
+  animation: task-running 1.8s ease-in-out infinite;
+}
 
 /* toolbar */
 #pipeline-toolbar {

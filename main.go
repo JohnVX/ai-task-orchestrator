@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -63,10 +64,48 @@ func main() {
 		os.Exit(1)
 	}
 
+	go runScheduler(pipelineMgr, runMgr, slogger)
+
 	addr := fmt.Sprintf(":%d", *port)
 	slogger.Info("ai-task-orchestrator starting", "addr", addr, "data", absDataDir)
 	if err := http.ListenAndServe(addr, h.Router()); err != nil {
 		slogger.Error("server failed", "error", err)
 		os.Exit(1)
+	}
+}
+
+func runScheduler(pipeMgr *pipeline.Manager, runMgr *runner.Manager, logger *slog.Logger) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	lastRun := make(map[string]time.Time)
+
+	for range ticker.C {
+		pipes, err := pipeMgr.All()
+		if err != nil {
+			continue
+		}
+		now := time.Now()
+		for _, p := range pipes {
+			if p.Schedule == "" || p.Status == pipeline.StatusRunning {
+				continue
+			}
+			if len(p.Tasks) == 0 {
+				continue
+			}
+			if !runner.MatchCron(p.Schedule, now) {
+				continue
+			}
+			minuteKey := now.Truncate(time.Minute)
+			if last, ok := lastRun[p.ID]; ok && !last.Before(minuteKey) {
+				continue
+			}
+			lastRun[p.ID] = minuteKey
+
+			logger.Info("scheduled pipeline triggered", "pipeline_id", p.ID, "schedule", p.Schedule)
+			if _, err := runMgr.Start(p.ID, p.Tasks); err != nil {
+				logger.Error("scheduled pipeline start failed", "pipeline_id", p.ID, "error", err)
+			}
+		}
 	}
 }

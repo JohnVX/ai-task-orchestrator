@@ -323,6 +323,9 @@ func (m *Manager) SetCommands(name, runCmd, stopCmd string) error {
 
 // Delete removes a task's package directory and metadata file.
 func (m *Manager) Delete(name string) error {
+	if !m.Exists(name) {
+		return fmt.Errorf("task %q not found", name)
+	}
 	ids, err := m.Pipelines(name)
 	if err != nil {
 		return err

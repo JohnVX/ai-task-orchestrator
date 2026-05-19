@@ -45,6 +45,7 @@ go build -o ai-task-orchestrator .
 - **停止 = 失败**：手动停止流水线 → stop_command 执行 → 超时 10s 后 SIGKILL 强杀 → 标记当前 task failed → 链上后续不触发。
 - **上游数据自理**：第一个 task 的输入由 task 自身解决，ai-task-orchestrator 不提供初始输入机制。
 - **多实例隔离**：不同 `-data` 目录的多个进程完全独立，互不干扰；同一 data 目录同时只允许一个进程，后启动的会检测 PID 冲突并拒绝启动。
+- **定时执行**：创建 pipeline 时可指定 cron 表达式（5 字段标准格式），由后台调度器每 30 秒检查一次触发条件。同一条 pipeline 每分钟最多触发一次，正在运行时跳过。重启后不追补离线期间遗漏的执行。
 - **安全**：上传的 tar 包在解包时拦截路径穿越攻击（`../` 和绝对路径），仅提取安全路径。
 
 ## 目录与存储结构
@@ -109,11 +110,14 @@ go build -o ai-task-orchestrator .
   "name": "我的流水线",
   "tasks": ["task-A", "task-B", "task-C"],
   "created_at": "2026-05-15T10:00:00Z",
-  "status": "idle"
+  "status": "idle",
+  "schedule": "0 9 * * *"
 }
 ```
 
 Pipeline 自身状态：`idle` | `running`
+
+`schedule` 可选，标准 5 字段 cron 表达式（分 时 日 月 周），空或缺失表示不启用定时执行。仅在创建时设定，运行中不可修改。
 
 ### `runs/{run-id}/{task-name}/meta.json`
 
@@ -164,7 +168,7 @@ Run 中 task 实例状态：`pending` | `running` | `success` | `failed` | `stop
 
 | 操作 | 规则 |
 |---|---|
-| 创建 | 输入名称，不重名则创建。 |
+| 创建 | 输入名称，不重名则创建。可附带 cron 表达式（5 字段标准格式）启用定时执行。 |
 | 拖入 task | 关联 task 到 pipeline。同一 task 可在同一 pipeline 中出现多次（暂不禁止）。 |
 | 拖出 task | 解除关联并删除该 pipeline 下该 task 的运行数据。UI 上提示"脱出将删除历史运行数据"。 |
 | 调整顺序 | 拖拽改变 task 在 pipeline 中的排序。 |
@@ -235,6 +239,7 @@ internal/
   task/task.go       — Task 元数据、上传/下载/自描述解析
   pipeline/pipeline.go — Pipeline CRUD 与 task 编排
   runner/runner.go   — 流水线执行、双缓冲、崩溃恢复
+  runner/cron.go     — cron 表达式解析匹配
   logger/logger.go   — slog 日志初始化、文件轮转
 web/
   templates/index.html — 主页面

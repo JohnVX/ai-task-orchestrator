@@ -27,6 +27,7 @@
       <h2>Pipelines</h2>
       <div id="pipeline-create">
         <input type="text" id="pipeline-name" placeholder="流水线名称">
+        <input type="text" id="pipeline-schedule" placeholder="*/30 * * * *（可选，cron 定时表达式）">
         <button id="pipeline-create-btn">创建</button>
       </div>
       <ul id="pipeline-list"></ul>
@@ -54,6 +55,7 @@
         <button id="pipeline-stop-btn">停止</button>
         <button id="pipeline-delete-btn">删除</button>
       </div>
+      <div id="pipeline-schedule-info" style="display:none;font-size:0.85rem;color:#666;margin:8px 0 12px 0"></div>
       <ul id="pipeline-task-list"></ul>
       <div id="run-history">
         <h3>运行历史</h3>

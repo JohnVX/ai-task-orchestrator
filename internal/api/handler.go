@@ -172,7 +172,12 @@ func (h *Handler) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleDeleteTask(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if err := h.Task.Delete(name); err != nil {
-		writeError(w, http.StatusConflict, err.Error())
+		msg := err.Error()
+		if strings.Contains(msg, "not found") {
+			writeError(w, http.StatusNotFound, msg)
+		} else {
+			writeError(w, http.StatusConflict, msg)
+		}
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -213,13 +218,18 @@ func (h *Handler) handleListPipelines(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) handleCreatePipeline(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Name string `json:"name"`
+		Name     string `json:"name"`
+		Schedule string `json:"schedule"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Name == "" {
 		writeError(w, http.StatusBadRequest, "pipeline name required")
 		return
 	}
-	p, err := h.Pipeline.Create(body.Name)
+	if body.Schedule != "" && !runner.ValidCron(body.Schedule) {
+		writeError(w, http.StatusBadRequest, "invalid cron expression")
+		return
+	}
+	p, err := h.Pipeline.Create(body.Name, body.Schedule)
 	if err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return
@@ -266,6 +276,7 @@ func (h *Handler) handleUpdatePipeline(w http.ResponseWriter, r *http.Request) {
 		Action   string   `json:"action"`
 		TaskName string   `json:"task_name"`
 		Tasks    []string `json:"tasks"`
+		Schedule string   `json:"schedule"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
@@ -280,6 +291,12 @@ func (h *Handler) handleUpdatePipeline(w http.ResponseWriter, r *http.Request) {
 		err = h.Pipeline.RemoveTask(id, body.TaskName)
 	case "reorder":
 		err = h.Pipeline.ReorderTasks(id, body.Tasks)
+	case "set_schedule":
+		if body.Schedule != "" && !runner.ValidCron(body.Schedule) {
+			writeError(w, http.StatusBadRequest, "invalid cron expression")
+			return
+		}
+		err = h.Pipeline.SetSchedule(id, body.Schedule)
 	default:
 		writeError(w, http.StatusBadRequest, "unknown action: "+body.Action)
 		return
@@ -295,7 +312,12 @@ func (h *Handler) handleUpdatePipeline(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleDeletePipeline(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if err := h.Pipeline.Delete(id); err != nil {
-		writeError(w, http.StatusConflict, err.Error())
+		msg := err.Error()
+		if strings.Contains(msg, "not found") || strings.Contains(msg, "no such file") {
+			writeError(w, http.StatusNotFound, "pipeline not found")
+		} else {
+			writeError(w, http.StatusConflict, msg)
+		}
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
