@@ -223,8 +223,9 @@ func (h *Handler) handleListPipelines(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) handleCreatePipeline(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Name     string `json:"name"`
-		Schedule string `json:"schedule"`
+		Name       string `json:"name"`
+		Schedule   string `json:"schedule"`
+		WebhookURL string `json:"webhook_url"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Name == "" {
 		writeError(w, http.StatusBadRequest, "pipeline name required")
@@ -234,7 +235,7 @@ func (h *Handler) handleCreatePipeline(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid cron expression")
 		return
 	}
-	p, err := h.Pipeline.Create(body.Name, body.Schedule)
+	p, err := h.Pipeline.Create(body.Name, body.Schedule, body.WebhookURL)
 	if err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return
@@ -292,6 +293,7 @@ func (h *Handler) handleUpdatePipeline(w http.ResponseWriter, r *http.Request) {
 		TaskIndices    []int    `json:"task_indices"`
 		Tasks          []string `json:"tasks"`
 		Schedule       string   `json:"schedule"`
+		WebhookURL     string   `json:"webhook_url"`
 		TimeoutSeconds *int     `json:"timeout_seconds,omitempty"`
 		OnTimeout      *string  `json:"on_timeout,omitempty"`
 		ContinueOnFailure *bool    `json:"continue_on_failure,omitempty"`
@@ -315,6 +317,8 @@ func (h *Handler) handleUpdatePipeline(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		err = h.Pipeline.SetSchedule(id, body.Schedule)
+	case "set_webhook":
+		err = h.Pipeline.SetWebhook(id, body.WebhookURL)
 	case "set_task_config":
 		err = h.Pipeline.SetTaskConfig(id, body.TaskIndex, body.TimeoutSeconds, body.OnTimeout, body.ContinueOnFailure)
 	default:
@@ -363,7 +367,7 @@ func (h *Handler) handleStartPipeline(w http.ResponseWriter, r *http.Request) {
 			ContinueOnFailure: ref.ContinueOnFailure,
 		}
 	}
-	runID, err := h.Runner.Start(id, runTasks)
+	runID, err := h.Runner.Start(id, runTasks, p.WebhookURL)
 	if err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return
@@ -426,7 +430,7 @@ func (h *Handler) handleListRuns(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		// Compute overall run status from task instances.
-		runStatus := computeRunStatus(instances)
+		runStatus := runner.ComputeRunStatus(instances)
 		size, _ := h.Runner.RunDirSize(e.Name())
 		runs = append(runs, runSummary{
 			RunID:      e.Name(),
@@ -557,31 +561,4 @@ func (h *Handler) handleIndex(w http.ResponseWriter, r *http.Request) {
 // RecoverOnStartup is called by main to clean up stale locks.
 func (h *Handler) RecoverOnStartup() error {
 	return h.Runner.RecoverOnStartup()
-}
-
-// computeRunStatus derives the overall run status from its task instances.
-func computeRunStatus(instances []runner.TaskInstance) string {
-	isRunning := false
-	hasFailure := false
-	hasSuccess := false
-	for _, inst := range instances {
-		switch inst.Status {
-		case runner.TaskStatusRunning, runner.TaskStatusPending:
-			isRunning = true
-		case runner.TaskStatusFailed, runner.TaskStatusCrashed, runner.TaskStatusStopped, runner.TaskStatusTimeout:
-			hasFailure = true
-		case runner.TaskStatusSuccess:
-			hasSuccess = true
-		}
-	}
-	if isRunning {
-		return "running"
-	}
-	if hasFailure {
-		return "failed"
-	}
-	if hasSuccess {
-		return "success"
-	}
-	return "unknown"
 }

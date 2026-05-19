@@ -29,7 +29,7 @@ const api = {
   },
   deleteTask(name)   { return this.request('DELETE', '/api/tasks/' + encodeURIComponent(name)); },
   getPipelines()     { return this.request('GET', '/api/pipelines'); },
-  createPipeline(name, schedule) { return this.request('POST', '/api/pipelines', { name, schedule }); },
+  createPipeline(name, schedule, webhookUrl) { return this.request('POST', '/api/pipelines', { name, schedule, webhook_url: webhookUrl }); },
   getPipeline(id)    { return this.request('GET', '/api/pipelines/' + id); },
   addTask(id, taskName) { return this.request('PUT', '/api/pipelines/' + id, { action: 'add_task', task_name: taskName }); },
   removeTask(id, taskIndex) { return this.request('PUT', '/api/pipelines/' + id, { action: 'remove_task', task_index: taskIndex }); },
@@ -209,10 +209,12 @@ function initPipelineCreate() {
     const name = nameInput.value.trim();
     if (!name) return;
     const schedule = document.getElementById('pipeline-schedule').value.trim() || undefined;
+    const webhookUrl = document.getElementById('pipeline-webhook').value.trim() || undefined;
     try {
-      await api.createPipeline(name, schedule);
+      await api.createPipeline(name, schedule, webhookUrl);
       nameInput.value = '';
       document.getElementById('pipeline-schedule').value = '';
+      document.getElementById('pipeline-webhook').value = '';
       renderPipelineList();
     } catch (e) { alert('创建失败: ' + e.message); }
   });
@@ -245,18 +247,22 @@ async function refreshCanvas() {
       api.getState(),
     ]);
     let runningTask = null;
+    let runningTaskIdx = -1;
     if (state && state.running_pipelines) {
       const rp = state.running_pipelines.find(p => p.pipeline_id === currentPipelineId);
-      if (rp) runningTask = rp.current_task;
+      if (rp) {
+        runningTask = rp.current_task;
+        runningTaskIdx = rp.task_index;
+      }
     }
-    renderPipelineTasks(data.pipeline, data.tasks, runningTask);
+    renderPipelineTasks(data.pipeline, data.tasks, runningTask, runningTaskIdx);
     updateRunButtons(data.pipeline);
   } catch (e) {
     document.getElementById('pipeline-task-list').innerHTML = '<li>加载失败</li>';
   }
 }
 
-function renderPipelineTasks(pipeline, tasks, runningTask) {
+function renderPipelineTasks(pipeline, tasks, runningTask, runningTaskIdx) {
   const ul = document.getElementById('pipeline-task-list');
   ul.innerHTML = '';
   // Show schedule info
@@ -286,6 +292,33 @@ function renderPipelineTasks(pipeline, tasks, runningTask) {
     });
   }
 
+  // Show webhook info
+  const webhookInfo = document.getElementById('pipeline-webhook-info');
+  if (pipeline.webhook_url) {
+    webhookInfo.innerHTML = '🔗 ' + pipeline.webhook_url +
+      (pipeline.status !== 'running'
+        ? ' <a href="#" id="webhook-edit" style="font-size:0.8rem;color:#1a73e8;text-decoration:none">[修改]</a>'
+        : '');
+    webhookInfo.style.display = 'block';
+  } else if (pipeline.status !== 'running') {
+    webhookInfo.innerHTML = '<a href="#" id="webhook-edit" style="font-size:0.8rem;color:#1a73e8;text-decoration:none">添加 Webhook</a>';
+    webhookInfo.style.display = 'block';
+  } else {
+    webhookInfo.style.display = 'none';
+  }
+  const webhookEditLink = document.getElementById('webhook-edit');
+  if (webhookEditLink) {
+    webhookEditLink.addEventListener('click', (e) => {
+      e.preventDefault();
+      const newWebhook = prompt('输入 Webhook URL（留空取消通知）：', pipeline.webhook_url || '');
+      if (newWebhook === null) return;
+      api.request('PUT', '/api/pipelines/' + currentPipelineId, {
+        action: 'set_webhook',
+        webhook_url: newWebhook,
+      }).then(() => refreshCanvas()).catch(e => alert('修改失败: ' + e.message));
+    });
+  }
+
   tasks.forEach((t, idx) => {
     const li = document.createElement('li');
     const span = document.createElement('span');
@@ -294,7 +327,7 @@ function renderPipelineTasks(pipeline, tasks, runningTask) {
 
     li.dataset.taskName = t.name;
     li.dataset.taskIndex = idx;
-    if (runningTask && t.name === runningTask) li.classList.add('running');
+    if (runningTask && t.name === runningTask && idx === runningTaskIdx) li.classList.add('running');
 
     const isRunning = pipeline.status === 'running';
     if (isRunning) li.classList.add('pipeline-running');
@@ -362,12 +395,13 @@ function closeConfigModal() {
 
 function resetConfig() {
   const task = currentConfigTask;
+  const idx = currentConfigIndex;
   if (!task) return;
   if (!confirm('重置 "' + task.name + '" 的所有覆盖设置？')) return;
   closeConfigModal();
   api.request('PUT', '/api/pipelines/' + currentPipelineId, {
     action: 'set_task_config',
-    task_index: currentConfigIndex,
+    task_index: idx,
     timeout_seconds: null,
     on_timeout: null,
     continue_on_failure: null,
@@ -376,6 +410,7 @@ function resetConfig() {
 
 function confirmConfig() {
   const task = currentConfigTask;
+  const idx = currentConfigIndex;
   if (!task) return;
 
   const secVal = document.getElementById('task-config-sec').value.trim();
@@ -393,7 +428,7 @@ function confirmConfig() {
   closeConfigModal();
   api.request('PUT', '/api/pipelines/' + currentPipelineId, {
     action: 'set_task_config',
-    task_index: currentConfigIndex,
+    task_index: idx,
     timeout_seconds: secVal !== '' ? parseInt(secVal, 10) : null,
     on_timeout: actionVal || null,
     continue_on_failure: continueVal === 'true' ? true : (continueVal === 'false' ? false : null),

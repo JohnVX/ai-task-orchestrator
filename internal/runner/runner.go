@@ -1,9 +1,11 @@
 package runner
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -194,7 +196,7 @@ func (m *Manager) appendEvent(runID, format string, args ...any) {
 // --- public methods ---
 
 // Start begins pipeline execution. Multiple pipelines can run concurrently.
-func (m *Manager) Start(pipelineID string, tasks []RunTask) (runID string, err error) {
+func (m *Manager) Start(pipelineID string, tasks []RunTask, webhookURL string) (runID string, err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -237,12 +239,12 @@ func (m *Manager) Start(pipelineID string, tasks []RunTask) (runID string, err e
 	ctl := &runControl{stopCh: make(chan struct{})}
 	m.running[pipelineID] = ctl
 
-	go m.runLoop(pipelineID, runID, runDir, tasks, ctl)
+	go m.runLoop(pipelineID, runID, runDir, tasks, ctl, webhookURL)
 
 	return runID, nil
 }
 
-func (m *Manager) runLoop(pipelineID, runID, runDir string, tasks []RunTask, ctl *runControl) {
+func (m *Manager) runLoop(pipelineID, runID, runDir string, tasks []RunTask, ctl *runControl, webhookURL string) {
 	defer func() {
 		m.removeFromState(pipelineID)
 		m.logger.Info("pipeline finished", "pipeline_id", pipelineID, "run_id", runID)
@@ -251,6 +253,10 @@ func (m *Manager) runLoop(pipelineID, runID, runDir string, tasks []RunTask, ctl
 		m.mu.Lock()
 		delete(m.running, pipelineID)
 		m.mu.Unlock()
+
+		if webhookURL != "" {
+			m.sendWebhook(webhookURL, pipelineID, runID)
+		}
 	}()
 
 	for i, rt := range tasks {
@@ -670,6 +676,132 @@ func (m *Manager) RunDirSize(runID string) (int64, error) {
 		return nil
 	})
 	return size, err
+}
+
+// webhookPayload is sent as JSON to the configured webhook URL upon pipeline completion.
+type webhookPayload struct {
+	Event        string `json:"event"`
+	PipelineID   string `json:"pipeline_id"`
+	RunID        string `json:"run_id"`
+	Status       string `json:"status"`
+	TaskCount    int    `json:"task_count"`
+	StartedAt    string `json:"started_at,omitempty"`
+	EndedAt      string `json:"ended_at,omitempty"`
+	FailedTask   string `json:"failed_task,omitempty"`
+}
+
+func (m *Manager) sendWebhook(url, pipelineID, runID string) {
+	runDir := filepath.Join(m.runsDir, runID)
+	entries, err := os.ReadDir(runDir)
+	if err != nil {
+		m.logger.Warn("webhook: cannot read run dir", "run_id", runID, "error", err)
+		return
+	}
+
+	var instances []TaskInstance
+	for _, e := range entries {
+		if !e.IsDir() || !strings.Contains(e.Name(), "-") {
+			continue
+		}
+		metaPath := filepath.Join(runDir, e.Name(), "meta.json")
+		data, err := os.ReadFile(metaPath)
+		if err != nil {
+			continue
+		}
+		var inst TaskInstance
+		if json.Unmarshal(data, &inst) != nil {
+			continue
+		}
+		instances = append(instances, inst)
+	}
+
+	if len(instances) == 0 {
+		return
+	}
+
+	// Don't notify for manually stopped pipelines — check any task has "stopped" status.
+	for _, inst := range instances {
+		if inst.Status == TaskStatusStopped {
+			return
+		}
+	}
+
+	status := ComputeRunStatus(instances)
+
+	startedAt := instances[0].StartedAt
+	endedAt := instances[len(instances)-1].EndedAt
+
+	failedTask := ""
+	if status == "failed" {
+		for _, inst := range instances {
+			if inst.Status == TaskStatusFailed || inst.Status == TaskStatusCrashed ||
+				inst.Status == TaskStatusStopped || inst.Status == TaskStatusTimeout {
+				failedTask = inst.TaskName
+				break
+			}
+		}
+	}
+
+	payload := webhookPayload{
+		Event:      "pipeline_completed",
+		PipelineID: pipelineID,
+		RunID:      runID,
+		Status:     status,
+		TaskCount:  len(instances),
+		FailedTask: failedTask,
+	}
+	if startedAt != nil {
+		payload.StartedAt = startedAt.Format(time.RFC3339)
+	}
+	if endedAt != nil {
+		payload.EndedAt = endedAt.Format(time.RFC3339)
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		m.logger.Warn("webhook: marshal error", "error", err)
+		return
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Post(url, "application/json", bytes.NewReader(body))
+	if err != nil {
+		m.logger.Warn("webhook: request failed", "url", url, "error", err)
+		return
+	}
+	resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		m.logger.Warn("webhook: non-2xx response", "url", url, "status", resp.StatusCode)
+		return
+	}
+	m.logger.Info("webhook sent", "pipeline_id", pipelineID, "run_id", runID, "status", status)
+}
+
+// ComputeRunStatus derives the overall run status from its task instances.
+func ComputeRunStatus(instances []TaskInstance) string {
+	if len(instances) == 0 {
+		return "unknown"
+	}
+	isRunning := false
+	hasHardFailure := false
+	for _, inst := range instances {
+		switch inst.Status {
+		case TaskStatusRunning, TaskStatusPending:
+			isRunning = true
+		case TaskStatusFailed, TaskStatusCrashed, TaskStatusStopped:
+			hasHardFailure = true
+		}
+	}
+	if isRunning {
+		return "running"
+	}
+	if instances[len(instances)-1].Status == TaskStatusSuccess {
+		return "success"
+	}
+	if hasHardFailure {
+		return "failed"
+	}
+	return "failed"
 }
 
 // RecoverOnStartup checks the lock file PID, cleans up stale locks for all pipelines.

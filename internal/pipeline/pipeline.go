@@ -32,8 +32,9 @@ type Pipeline struct {
 	Name      string    `json:"name"`
 	Tasks     []TaskRef `json:"tasks"`
 	CreatedAt time.Time `json:"created_at"`
-	Status    string    `json:"status"`
-	Schedule  string    `json:"schedule,omitempty"`
+	Status      string    `json:"status"`
+	Schedule    string    `json:"schedule,omitempty"`
+	WebhookURL  string    `json:"webhook_url,omitempty"`
 }
 
 // TaskChecker is the interface pipeline needs from the task package.
@@ -113,7 +114,7 @@ func (m *Manager) nextID() string {
 // --- public methods ---
 
 // Create writes a new pipeline definition.
-func (m *Manager) Create(name string, schedule string) (*Pipeline, error) {
+func (m *Manager) Create(name string, schedule string, webhookURL string) (*Pipeline, error) {
 	all, err := m.All()
 	if err != nil {
 		return nil, err
@@ -125,12 +126,13 @@ func (m *Manager) Create(name string, schedule string) (*Pipeline, error) {
 	}
 
 	p := &Pipeline{
-		ID:        m.nextID(),
-		Name:      name,
-		Tasks:     []TaskRef{},
-		CreatedAt: time.Now().UTC(),
-		Status:    StatusIdle,
-		Schedule:  schedule,
+		ID:          m.nextID(),
+		Name:        name,
+		Tasks:       []TaskRef{},
+		CreatedAt:   time.Now().UTC(),
+		Status:      StatusIdle,
+		Schedule:    schedule,
+		WebhookURL:  webhookURL,
 	}
 	if err := m.writePipeline(p); err != nil {
 		return nil, err
@@ -172,11 +174,11 @@ func (m *Manager) All() ([]Pipeline, error) {
 	entries, err := os.ReadDir(m.pipelinesDir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			return []Pipeline{}, nil
 		}
 		return nil, err
 	}
-	var pipes []Pipeline
+	pipes := make([]Pipeline, 0)
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
 			continue
@@ -225,6 +227,9 @@ func (m *Manager) ReorderTasks(pipelineID string, indices []int) error {
 		return err
 	}
 	oldTasks := p.Tasks
+	if len(oldTasks) == 0 {
+		return fmt.Errorf("cannot reorder empty pipeline")
+	}
 	newTasks := make([]TaskRef, 0, len(indices))
 	for _, idx := range indices {
 		if idx >= 0 && idx < len(oldTasks) {
@@ -258,6 +263,20 @@ func (m *Manager) SetSchedule(id, schedule string) error {
 		return fmt.Errorf("cannot modify schedule while pipeline is running")
 	}
 	p.Schedule = schedule
+	return m.writePipeline(p)
+}
+
+// SetWebhook updates the webhook URL for pipeline completion notifications.
+// Empty string disables notifications.
+func (m *Manager) SetWebhook(id, webhookURL string) error {
+	p, err := m.readPipeline(id)
+	if err != nil {
+		return err
+	}
+	if p.Status == StatusRunning {
+		return fmt.Errorf("cannot modify webhook while pipeline is running")
+	}
+	p.WebhookURL = webhookURL
 	return m.writePipeline(p)
 }
 
