@@ -22,12 +22,12 @@ type Handler struct {
 	Runner   *runner.Manager
 	dataDir  string
 	tmpl     *template.Template
+	staticFS http.FileSystem
 }
 
 // NewHandler creates a Handler.
-func NewHandler(tm *task.Manager, pm *pipeline.Manager, rm *runner.Manager, dataDir string) *Handler {
-	tmpl := template.Must(template.ParseFiles(filepath.Join("web", "templates", "index.html")))
-	return &Handler{Task: tm, Pipeline: pm, Runner: rm, dataDir: dataDir, tmpl: tmpl}
+func NewHandler(tm *task.Manager, pm *pipeline.Manager, rm *runner.Manager, dataDir string, tmpl *template.Template, staticFS http.FileSystem) *Handler {
+	return &Handler{Task: tm, Pipeline: pm, Runner: rm, dataDir: dataDir, tmpl: tmpl, staticFS: staticFS}
 }
 
 // Router returns an http.Handler that serves all routes.
@@ -61,7 +61,7 @@ func (h *Handler) Router() http.Handler {
 	mux.HandleFunc("GET /api/state", h.handleState)
 
 	// Static files
-	fs := http.FileServer(http.Dir("web/static"))
+	fs := http.FileServer(h.staticFS)
 	mux.Handle("GET /static/", http.StripPrefix("/static/", fs))
 
 	// Page

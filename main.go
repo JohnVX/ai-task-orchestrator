@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"embed"
 	"flag"
 	"fmt"
+	"html/template"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
@@ -18,6 +21,12 @@ import (
 	"github.com/ai-task-orchestrator/internal/runner"
 	"github.com/ai-task-orchestrator/internal/task"
 )
+
+//go:embed web/templates/index.html
+var indexHTML string
+
+//go:embed web/static/*
+var staticFiles embed.FS
 
 func main() {
 	port := flag.Int("port", 8080, "HTTP listen port")
@@ -61,7 +70,10 @@ func main() {
 	pipelineMgr := pipeline.NewManager(filepath.Join(absDataDir, "pipelines"), taskMgr, runMgr)
 	runMgr.SetPipelineStatusSetter(pipelineMgr)
 
-	h := api.NewHandler(taskMgr, pipelineMgr, runMgr, absDataDir)
+	tmpl := template.Must(template.New("index").Parse(indexHTML))
+	staticFS, _ := fs.Sub(staticFiles, "web/static")
+
+	h := api.NewHandler(taskMgr, pipelineMgr, runMgr, absDataDir, tmpl, http.FS(staticFS))
 	if err := h.RecoverOnStartup(); err != nil {
 		slogger.Error("recovery failed", "error", err)
 		os.Exit(1)
