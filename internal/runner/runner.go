@@ -427,6 +427,20 @@ func (m *Manager) Stop(pipelineID string) error {
 	return nil
 }
 
+// StopAll terminates all running pipelines. Used during graceful shutdown.
+func (m *Manager) StopAll() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for id, ctl := range m.running {
+		select {
+		case <-ctl.stopCh:
+		default:
+			close(ctl.stopCh)
+		}
+		m.logger.Info("pipeline stopping due to shutdown", "pipeline_id", id)
+	}
+}
+
 // IsRunning returns true if the given pipeline is currently executing.
 func (m *Manager) IsRunning(pipelineID string) bool {
 	m.mu.Lock()

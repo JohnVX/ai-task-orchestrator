@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/ai-task-orchestrator/internal/api"
@@ -67,11 +70,29 @@ func main() {
 	go runScheduler(pipelineMgr, runMgr, slogger)
 
 	addr := fmt.Sprintf(":%d", *port)
+	srv := &http.Server{Addr: addr, Handler: h.Router()}
+
+	go func() {
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+		sig := <-sigCh
+		slogger.Info("shutting down", "signal", sig.String())
+
+		runMgr.StopAll()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(ctx); err != nil {
+			slogger.Error("shutdown", "error", err)
+		}
+	}()
+
 	slogger.Info("ai-task-orchestrator starting", "addr", addr, "data", absDataDir)
-	if err := http.ListenAndServe(addr, h.Router()); err != nil {
+	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
 		slogger.Error("server failed", "error", err)
 		os.Exit(1)
 	}
+	slogger.Info("server stopped")
 }
 
 func runScheduler(pipeMgr *pipeline.Manager, runMgr *runner.Manager, logger *slog.Logger) {

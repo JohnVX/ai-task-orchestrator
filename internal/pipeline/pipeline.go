@@ -145,6 +145,10 @@ func (m *Manager) Delete(id string) error {
 		if err := m.runCleaner.DeleteRuns(id); err != nil {
 			return fmt.Errorf("delete runs for pipeline %s: %w", id, err)
 		}
+		// Re-check: Start() may have registered between the first check and now.
+		if m.runCleaner.IsRunning(id) {
+			return fmt.Errorf("pipeline %s is running, stop it first", id)
+		}
 	}
 	return os.Remove(m.pipelinePath(id))
 }
