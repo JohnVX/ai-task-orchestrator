@@ -144,7 +144,7 @@ func runScheduler(pipeMgr *pipeline.Manager, runMgr *runner.Manager, logger *slo
 					OnTimeout:      ref.OnTimeout,
 				}
 			}
-			if _, err := runMgr.Start(p.ID, runTasks, p.WebhookURL); err != nil {
+			if _, err := runMgr.Start(p.ID, runTasks, p.WebhookURL, p.Name); err != nil {
 				logger.Error("scheduled pipeline start failed", "pipeline_id", p.ID, "error", err)
 			}
 		}

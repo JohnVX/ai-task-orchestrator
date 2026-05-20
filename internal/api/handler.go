@@ -4,11 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
-	"strconv"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/ai-task-orchestrator/internal/pipeline"
@@ -57,6 +58,7 @@ func (h *Handler) Router() http.Handler {
 	mux.HandleFunc("GET /api/runs/{id}", h.handleGetRun)
 	mux.HandleFunc("GET /api/runs/{id}/events", h.handleGetRunEvents)
 	mux.HandleFunc("DELETE /api/runs/{id}", h.handleDeleteRun)
+	mux.HandleFunc("POST /api/runs/{id}/continue", h.handleContinueRun)
 
 	// State
 	mux.HandleFunc("GET /api/state", h.handleState)
@@ -156,11 +158,11 @@ func (h *Handler) handleGetTask(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	var body struct {
-		RunCommand     string `json:"run_command"`
-		StopCommand    string `json:"stop_command"`
-		TimeoutEnabled bool   `json:"timeout_enabled"`
-		TimeoutSeconds int    `json:"timeout_seconds"`
-		OnTimeout      string `json:"on_timeout"`
+		RunCommand        string `json:"run_command"`
+		StopCommand       string `json:"stop_command"`
+		TimeoutEnabled    bool   `json:"timeout_enabled"`
+		TimeoutSeconds    int    `json:"timeout_seconds"`
+		OnTimeout         string `json:"on_timeout"`
 		ContinueOnFailure bool   `json:"continue_on_failure"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -253,20 +255,20 @@ func (h *Handler) handleGetPipeline(w http.ResponseWriter, r *http.Request) {
 
 	// Enrich tasks with metadata and pipeline-level timeout overrides.
 	type taskInfo struct {
-		Name           string  `json:"name"`
-		RunCmd         string  `json:"run_command"`
-		StopCmd        string  `json:"stop_command"`
-		Readme         string  `json:"readme"`
-		TimeoutSeconds *int    `json:"timeout_seconds,omitempty"`
-		OnTimeout      *string `json:"on_timeout,omitempty"`
-			ContinueOnFailure *bool   `json:"continue_on_failure,omitempty"`
+		Name              string  `json:"name"`
+		RunCmd            string  `json:"run_command"`
+		StopCmd           string  `json:"stop_command"`
+		Readme            string  `json:"readme"`
+		TimeoutSeconds    *int    `json:"timeout_seconds,omitempty"`
+		OnTimeout         *string `json:"on_timeout,omitempty"`
+		ContinueOnFailure *bool   `json:"continue_on_failure,omitempty"`
 	}
 	tasks := make([]taskInfo, 0, len(p.Tasks))
 	for _, ref := range p.Tasks {
 		info := taskInfo{
-			Name:           ref.Name,
-			TimeoutSeconds: ref.TimeoutSeconds,
-			OnTimeout:      ref.OnTimeout,
+			Name:              ref.Name,
+			TimeoutSeconds:    ref.TimeoutSeconds,
+			OnTimeout:         ref.OnTimeout,
 			ContinueOnFailure: ref.ContinueOnFailure,
 		}
 		if meta, err := h.Task.Get(ref.Name); err == nil {
@@ -287,15 +289,15 @@ func (h *Handler) handleGetPipeline(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleUpdatePipeline(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var body struct {
-		Action         string   `json:"action"`
-		TaskName       string   `json:"task_name"`
-		TaskIndex      int      `json:"task_index"`
-		TaskIndices    []int    `json:"task_indices"`
-		Tasks          []string `json:"tasks"`
-		Schedule       string   `json:"schedule"`
-		WebhookURL     string   `json:"webhook_url"`
-		TimeoutSeconds *int     `json:"timeout_seconds,omitempty"`
-		OnTimeout      *string  `json:"on_timeout,omitempty"`
+		Action            string   `json:"action"`
+		TaskName          string   `json:"task_name"`
+		TaskIndex         int      `json:"task_index"`
+		TaskIndices       []int    `json:"task_indices"`
+		Tasks             []string `json:"tasks"`
+		Schedule          string   `json:"schedule"`
+		WebhookURL        string   `json:"webhook_url"`
+		TimeoutSeconds    *int     `json:"timeout_seconds,omitempty"`
+		OnTimeout         *string  `json:"on_timeout,omitempty"`
 		ContinueOnFailure *bool    `json:"continue_on_failure,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -367,7 +369,7 @@ func (h *Handler) handleStartPipeline(w http.ResponseWriter, r *http.Request) {
 			ContinueOnFailure: ref.ContinueOnFailure,
 		}
 	}
-	runID, err := h.Runner.Start(id, runTasks, p.WebhookURL)
+	runID, err := h.Runner.Start(id, runTasks, p.WebhookURL, p.Name)
 	if err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return
@@ -393,6 +395,35 @@ func (h *Handler) handleStopPipeline(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := h.Runner.Stop(id); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+func (h *Handler) handleContinueRun(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("id")
+	var body struct {
+		PipelineID string `json:"pipeline_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.PipelineID == "" {
+		writeError(w, http.StatusBadRequest, "pipeline_id required")
+		return
+	}
+	p, err := h.Pipeline.Get(body.PipelineID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "pipeline not found")
+		return
+	}
+	runTasks := make([]runner.RunTask, len(p.Tasks))
+	for i, ref := range p.Tasks {
+		runTasks[i] = runner.RunTask{
+			Name:              ref.Name,
+			TimeoutSeconds:    ref.TimeoutSeconds,
+			OnTimeout:         ref.OnTimeout,
+			ContinueOnFailure: ref.ContinueOnFailure,
+		}
+	}
+	if err := h.Runner.ContinueRun(body.PipelineID, runID, runTasks, p.WebhookURL, p.Name); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -443,6 +474,9 @@ func (h *Handler) handleListRuns(w http.ResponseWriter, r *http.Request) {
 	if runs == nil {
 		runs = []runSummary{}
 	}
+	sort.Slice(runs, func(i, j int) bool {
+		return runs[i].RunID > runs[j].RunID
+	})
 	writeJSON(w, http.StatusOK, runs)
 }
 
@@ -455,9 +489,9 @@ func (h *Handler) handleGetRun(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "task parameter required for logs")
 			return
 		}
-			taskIdxStr := r.URL.Query().Get("task_idx")
-			taskIdx, _ := strconv.Atoi(taskIdxStr)
-			stdout, stderr, err := h.Runner.RunLog(id, taskName, taskIdx)
+		taskIdxStr := r.URL.Query().Get("task_idx")
+		taskIdx, _ := strconv.Atoi(taskIdxStr)
+		stdout, stderr, err := h.Runner.RunLog(id, taskName, taskIdx)
 		if err != nil {
 			writeError(w, http.StatusNotFound, err.Error())
 			return

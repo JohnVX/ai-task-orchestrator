@@ -43,6 +43,7 @@ const api = {
   getRunEvents(runId) { return this.request('GET', '/api/runs/' + runId + '/events'); },
   deleteRun(runId)   { return this.request('DELETE', '/api/runs/' + encodeURIComponent(runId)); },
   getState()         { return this.request('GET', '/api/state'); },
+  retryRun(id, runId) { return this.request('POST', '/api/runs/' + encodeURIComponent(runId) + '/continue', { pipeline_id: id }); },
 };
 
 // --- state ---
@@ -84,7 +85,7 @@ async function renderTaskList() {
       li.addEventListener('click', () => showTaskDetail(t.name));
       ul.appendChild(li);
     });
-    initSortable();
+    initTaskListSortable();
   } catch (e) {
     ul.innerHTML = '<li style="color:#d93025">加载失败</li>';
   }
@@ -255,14 +256,28 @@ async function refreshCanvas() {
         runningTaskIdx = rp.task_index;
       }
     }
-    renderPipelineTasks(data.pipeline, data.tasks, runningTask, runningTaskIdx);
-    updateRunButtons(data.pipeline);
+    let lastRunStatus = '';
+    let highlightIdx = -1;
+    try {
+      const runs = await api.getRuns(currentPipelineId);
+      if (runs.length > 0) {
+        lastRunStatus = runs[0].status;
+        const instances = await api.getRun(runs[0].run_id);
+        instances.forEach(inst => {
+          if (inst.status !== 'success' && inst.status !== 'pending') {
+            highlightIdx = inst.index;
+          }
+        });
+      }
+    } catch (e) { /* ignore */ }
+    renderPipelineTasks(data.pipeline, data.tasks, runningTask, runningTaskIdx, highlightIdx, lastRunStatus);
+    updateRunButtons(data.pipeline, lastRunStatus);
   } catch (e) {
     document.getElementById('pipeline-task-list').innerHTML = '<li>加载失败</li>';
   }
 }
 
-function renderPipelineTasks(pipeline, tasks, runningTask, runningTaskIdx) {
+function renderPipelineTasks(pipeline, tasks, runningTask, runningTaskIdx, highlightIdx, lastRunStatus) {
   const ul = document.getElementById('pipeline-task-list');
   ul.innerHTML = '';
   // Show schedule info
@@ -328,25 +343,30 @@ function renderPipelineTasks(pipeline, tasks, runningTask, runningTaskIdx) {
     li.dataset.taskName = t.name;
     li.dataset.taskIndex = idx;
     if (runningTask && t.name === runningTask && idx === runningTaskIdx) li.classList.add('running');
+    if (idx === highlightIdx && lastRunStatus !== 'success' && pipeline.status !== 'running') {
+      li.classList.add('task-failed');
+    }
 
     const isRunning = pipeline.status === 'running';
-    if (isRunning) li.classList.add('pipeline-running');
-
-    const rmBtn = document.createElement('button');
-    rmBtn.textContent = '×';
-    rmBtn.className = 'task-remove-btn';
-    rmBtn.title = '移除';
-    rmBtn.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      if (confirm('将 "' + t.name + '" 从流水线中移除？')) {
-        try {
-          await api.removeTask(currentPipelineId, idx);
-          refreshCanvas();
-          renderRunHistory();
-        } catch (e) { alert('移除失败: ' + e.message); }
-      }
-    });
-    li.appendChild(rmBtn);
+    if (isRunning) {
+      li.classList.add('pipeline-running');
+    } else {
+      const rmBtn = document.createElement('button');
+      rmBtn.textContent = '×';
+      rmBtn.className = 'task-remove-btn';
+      rmBtn.title = '移除';
+      rmBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        if (confirm('将 "' + t.name + '" 从流水线中移除？')) {
+          try {
+            await api.removeTask(currentPipelineId, idx);
+            refreshCanvas();
+            renderRunHistory();
+          } catch (e) { alert('移除失败: ' + e.message); }
+        }
+      });
+      li.appendChild(rmBtn);
+    }
 
     li.addEventListener('click', () => {
       if (pipeline.status === 'running') {
@@ -357,7 +377,7 @@ function renderPipelineTasks(pipeline, tasks, runningTask, runningTaskIdx) {
     });
     ul.appendChild(li);
   });
-  initSortable();
+  initPipelineSortable(pipeline.status === 'running');
 }
 
 // -- task config modal --
@@ -446,35 +466,38 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 });
 
-function updateRunButtons(pipeline) {
+function updateRunButtons(pipeline, lastRunStatus) {
   const runBtn = document.getElementById('pipeline-run-btn');
   const stopBtn = document.getElementById('pipeline-stop-btn');
+  const retryBtn = document.getElementById('pipeline-retry-btn');
   const running = pipeline.status === 'running';
   runBtn.disabled = running;
   stopBtn.disabled = !running;
+  const retryable = ['failed', 'timeout', 'stopped', 'crashed'];
+  retryBtn.style.display = (!running && retryable.includes(lastRunStatus)) ? '' : 'none';
 }
 
 // --- sortable ---
 
 let sortableInstance = null;
 
-function initSortable() {
-  if (sortableInstance) sortableInstance.destroy();
-
+function initTaskListSortable() {
   const taskList = document.getElementById('task-list');
-  const pipelineList = document.getElementById('pipeline-task-list');
-
-  // Task library: clones can be pulled to pipeline
   Sortable.create(taskList, {
     group: { name: 'tasks', pull: 'clone', put: false },
     sort: false,
   });
+}
 
-  // Pipeline: accepts drops and reorders
+function initPipelineSortable(running) {
+  if (sortableInstance) sortableInstance.destroy();
+  const pipelineList = document.getElementById('pipeline-task-list');
   sortableInstance = Sortable.create(pipelineList, {
-    group: { name: 'tasks', pull: true, put: true },
+    group: { name: 'tasks', pull: running ? false : true, put: running ? false : true },
+    sort: !running,
     animation: 150,
     onAdd: async function(evt) {
+      if (running) return;
       const taskName = evt.item.dataset.taskName || evt.item.textContent;
       try {
         await api.addTask(currentPipelineId, taskName);
@@ -487,6 +510,7 @@ function initSortable() {
       }
     },
     onUpdate: async function(evt) {
+      if (running) return;
       const items = [...evt.from.querySelectorAll('li')].map(li => parseInt(li.dataset.taskIndex, 10));
       try {
         await api.reorderTasks(currentPipelineId, items);
@@ -524,6 +548,21 @@ function initRunButtons() {
       refreshCanvas();
     } catch (e) { alert('删除失败: ' + e.message); }
   });
+  document.getElementById('pipeline-retry-btn').addEventListener('click', async () => {
+    if (!currentPipelineId) return;
+    try {
+      const runs = await api.getRuns(currentPipelineId);
+      if (runs.length === 0) { alert('没有可续跑的运行记录'); return; }
+      const lastRun = runs[0];
+      const retryable = ['failed', 'timeout', 'stopped', 'crashed'];
+      if (!retryable.includes(lastRun.status)) {
+        alert('上次运行已成功，无需续跑');
+        return;
+      }
+      await api.retryRun(currentPipelineId, lastRun.run_id);
+      refreshAll();
+    } catch (e) { alert('续跑失败: ' + e.message); }
+  });
 }
 
 // --- run history ---
@@ -547,7 +586,7 @@ async function renderRunHistory() {
       }
     } catch (e) { /* ignore */ }
 
-    table.innerHTML = '<tr><th>Run</th><th>状态</th><th>Tasks</th><th>Size</th><th></th></tr>';
+    table.innerHTML = '<tr><th>Run</th><th>状态</th><th>Size</th><th>操作</th></tr>';
     runs.forEach(r => {
       const tr = document.createElement('tr');
       if (r.run_id === currentRunId) tr.classList.add('run-active');
@@ -565,12 +604,24 @@ async function renderRunHistory() {
                        r.size > 1024 ? (r.size/1024).toFixed(1) + 'KB' : r.size + 'B';
       tr.innerHTML = '<td>' + r.run_id + '</td>' +
         '<td style="color:' + statusColor + ';font-weight:600">' + statusText + '</td>' +
-        '<td>' + r.task_count + '</td><td>' + sizeStr + '</td>' +
-        '<td><button data-run="' + r.run_id + '" class="view-run-btn">查看</button></td>';
+        '<td>' + sizeStr + '</td>' +
+        '<td><button data-run="' + r.run_id + '" class="view-run-btn">查看</button> ' +
+        '<button data-run="' + r.run_id + '" class="delete-run-btn" style="color:#d93025;margin-left:6px">删除</button></td>';
       table.appendChild(tr);
-    });
+    })
     table.querySelectorAll('.view-run-btn').forEach(btn => {
       btn.addEventListener('click', () => showRunDetail(btn.dataset.run));
+    });
+    table.querySelectorAll('.delete-run-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const runId = btn.dataset.run;
+        if (!confirm('确定删除 ' + runId + ' 吗？此操作不可撤销。')) return;
+        try {
+          await api.deleteRun(runId);
+          renderRunHistory();
+          refreshCanvas();
+        } catch (e) { alert('删除失败: ' + e.message); }
+      });
     });
   } catch (e) {
     table.innerHTML = '<tr><td>加载失败</td></tr>';
@@ -592,7 +643,6 @@ async function showRunDetail(runId) {
         '</li>';
     });
     html += '</ul><button id="show-events-btn" data-run="' + runId + '">事件日志</button> ' +
-      '<button id="delete-run-btn" data-run="' + runId + '">删除</button> ' +
       '<button id="close-run-detail">关闭</button>';
 
     const div = document.getElementById('run-detail');
@@ -606,20 +656,7 @@ async function showRunDetail(runId) {
     if (eventsBtn) {
       eventsBtn.addEventListener('click', () => showEventsLog(runId));
     }
-    const deleteBtn = div.querySelector('#delete-run-btn');
-    if (deleteBtn) {
-      deleteBtn.addEventListener('click', async () => {
-        if (!confirm('确定删除 ' + runId + ' 吗？此操作不可撤销。')) return;
-        try {
-          await api.deleteRun(runId);
-          div.style.display = 'none';
-          clearAutoRefresh();
-          const lv = document.getElementById('log-viewer');
-          if (lv) lv.style.display = 'none';
-          renderRunHistory();
-        } catch (e) { alert('删除失败: ' + e.message); }
-      });
-    }
+
   } catch (e) { alert('加载失败: ' + e.message); }
 }
 

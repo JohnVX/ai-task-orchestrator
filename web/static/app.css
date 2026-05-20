@@ -48,7 +48,7 @@ footer a:hover {
 
 /* sidebar */
 aside {
-  width: 380px;
+  width: 460px;
   background: #fff;
   border-right: 1px solid #ddd;
   overflow-y: hidden;
@@ -157,6 +157,11 @@ aside section { margin-bottom: 20px; }
 #pipeline-task-list li.pipeline-running {
   cursor: not-allowed;
   opacity: 0.85;
+}
+
+#pipeline-task-list li.task-failed {
+  background: #fce8e6;
+  border-left: 3px solid #d93025;
 }
 
 /* toolbar */

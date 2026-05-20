@@ -200,6 +200,9 @@ func (m *Manager) AddTask(pipelineID, taskName string) error {
 	if err != nil {
 		return err
 	}
+	if p.Status == StatusRunning {
+		return fmt.Errorf("cannot modify pipeline while running")
+	}
 	if !m.taskMgr.Exists(taskName) {
 		return fmt.Errorf("task %q does not exist", taskName)
 	}
@@ -213,6 +216,9 @@ func (m *Manager) RemoveTask(pipelineID string, taskIndex int) error {
 	if err != nil {
 		return err
 	}
+	if p.Status == StatusRunning {
+		return fmt.Errorf("cannot modify pipeline while running")
+	}
 	if taskIndex < 0 || taskIndex >= len(p.Tasks) {
 		return fmt.Errorf("invalid task index %d", taskIndex)
 	}
@@ -225,6 +231,9 @@ func (m *Manager) ReorderTasks(pipelineID string, indices []int) error {
 	p, err := m.readPipeline(pipelineID)
 	if err != nil {
 		return err
+	}
+	if p.Status == StatusRunning {
+		return fmt.Errorf("cannot modify pipeline while running")
 	}
 	oldTasks := p.Tasks
 	if len(oldTasks) == 0 {

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"regexp"
 )
 
 // Meta holds orchestrator-managed metadata for a single task.
@@ -119,6 +120,9 @@ func (m *Manager) Upload(tarPath string) (*Meta, error) {
 	name := strings.TrimSuffix(filepath.Base(tarPath), ".tar")
 	if name == "" || name == filepath.Base(tarPath) {
 		return nil, fmt.Errorf("invalid tar filename, must be <name>.tar")
+	}
+	if !validTaskName(name) {
+		return nil, fmt.Errorf("invalid task name %q: only letters, digits, hyphens and underscores allowed", name)
 	}
 	if m.Exists(name) {
 		return nil, fmt.Errorf("task %q already exists", name)
@@ -453,4 +457,10 @@ func (m *Manager) Export(name string) (string, error) {
 // Get returns metadata for a specific task.
 func (m *Manager) Get(name string) (*Meta, error) {
 	return m.readMeta(name)
+}
+
+var taskNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
+
+func validTaskName(name string) bool {
+	return taskNameRe.MatchString(name)
 }
