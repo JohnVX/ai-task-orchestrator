@@ -3,10 +3,15 @@ package runner
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/ai-task-orchestrator/internal/task"
 )
 
 func TestWriteTaskMetaWithIndex(t *testing.T) {
@@ -328,3 +333,233 @@ func readLogByPath(runsDir, taskName string, taskIdx int) (stdout, stderr string
 	return string(stdoutB), string(stderrB), nil
 }
 
+
+// --- retry tests ---
+
+func TestRetryOnTimeout(t *testing.T) {
+	dir := t.TempDir()
+	dataDir := filepath.Join(dir, "data")
+	tasksDir := filepath.Join(dataDir, "tasks")
+	taskMetaDir := filepath.Join(dataDir, "task_meta")
+	pipelinesDir := filepath.Join(dataDir, "pipelines")
+	runsDir := filepath.Join(dataDir, "runs")
+
+	for _, d := range []string{tasksDir, taskMetaDir, pipelinesDir, runsDir} {
+		os.MkdirAll(d, 0755)
+	}
+
+	// Create a task that sleeps
+	taskName := "sleepy"
+	taskDir := filepath.Join(tasksDir, taskName)
+	os.MkdirAll(taskDir, 0755)
+	os.WriteFile(filepath.Join(taskDir, "run.sh"), []byte("#!/bin/sh\nsleep 10\necho done\n"), 0755)
+
+	// Write task meta
+	meta := task.Meta{
+		Name:           taskName,
+		PackagePath:    "tasks/" + taskName,
+		RunCommand:     "./run.sh",
+		StopCommand:    "",
+		TimeoutEnabled: true,
+		TimeoutSeconds: 1,
+		OnTimeout:      "fail",
+		RetryCount:     1,
+	}
+	writeJSONFile(t, filepath.Join(taskMetaDir, taskName+".json"), meta)
+
+	taskMgr := task.NewManager(tasksDir, taskMetaDir, pipelinesDir)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mgr := NewManager(runsDir, dataDir, taskMgr, logger)
+	mgr.SetPipelineStatusSetter(&stubStatusSetter{})
+
+	tasks := []RunTask{
+		{Name: taskName, RetryCount: intPtr(1)},
+	}
+	runID, err := mgr.Start("pipeline-1", tasks, "", "test-pipeline")
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Wait for pipeline to finish (2 attempts, 1s timeout each + overhead)
+	time.Sleep(5 * time.Second)
+
+	// Verify retry entries in events log
+	events, err := mgr.RunEvents(runID)
+	if err != nil {
+		t.Fatalf("RunEvents: %v", err)
+	}
+	if !strings.Contains(events, "event=retry") {
+		t.Fatalf("expected retry event in events log, got:\n%s", events)
+	}
+	if !strings.Contains(events, "event=timeout") {
+		t.Fatalf("expected timeout event in events log, got:\n%s", events)
+	}
+
+	// Verify final status is timeout (not success)
+	instances, err := mgr.RunInfo(runID)
+	if err != nil {
+		t.Fatalf("RunInfo: %v", err)
+	}
+	if len(instances) != 1 {
+		t.Fatalf("expected 1 instance, got %d", len(instances))
+	}
+	if instances[0].Status != TaskStatusTimeout {
+		t.Fatalf("expected status timeout, got %s", instances[0].Status)
+	}
+}
+
+func TestNoRetryOnNonTimeoutFailure(t *testing.T) {
+	dir := t.TempDir()
+	dataDir := filepath.Join(dir, "data")
+	tasksDir := filepath.Join(dataDir, "tasks")
+	taskMetaDir := filepath.Join(dataDir, "task_meta")
+	pipelinesDir := filepath.Join(dataDir, "pipelines")
+	runsDir := filepath.Join(dataDir, "runs")
+
+	for _, d := range []string{tasksDir, taskMetaDir, pipelinesDir, runsDir} {
+		os.MkdirAll(d, 0755)
+	}
+
+	// Create a task that exits non-zero immediately
+	taskName := "failer"
+	taskDir := filepath.Join(tasksDir, taskName)
+	os.MkdirAll(taskDir, 0755)
+	os.WriteFile(filepath.Join(taskDir, "run.sh"), []byte("#!/bin/sh\nexit 1\n"), 0755)
+
+	meta := task.Meta{
+		Name:           taskName,
+		PackagePath:    "tasks/" + taskName,
+		RunCommand:     "./run.sh",
+		StopCommand:    "",
+		TimeoutEnabled: false,
+		RetryCount:     2,
+	}
+	writeJSONFile(t, filepath.Join(taskMetaDir, taskName+".json"), meta)
+
+	taskMgr := task.NewManager(tasksDir, taskMetaDir, pipelinesDir)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mgr := NewManager(runsDir, dataDir, taskMgr, logger)
+	mgr.SetPipelineStatusSetter(&stubStatusSetter{})
+
+	tasks := []RunTask{
+		{Name: taskName},
+	}
+	runID, err := mgr.Start("pipeline-1", tasks, "", "test-pipeline")
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	time.Sleep(2 * time.Second)
+
+	// Verify NO retry events (retry only on timeout, not exit code)
+	events, err := mgr.RunEvents(runID)
+	if err != nil {
+		t.Fatalf("RunEvents: %v", err)
+	}
+	if strings.Contains(events, "event=retry") {
+		t.Fatalf("unexpected retry event for non-timeout failure:\n%s", events)
+	}
+
+	instances, err := mgr.RunInfo(runID)
+	if err != nil {
+		t.Fatalf("RunInfo: %v", err)
+	}
+	if instances[0].Status != TaskStatusFailed {
+		t.Fatalf("expected status failed, got %s", instances[0].Status)
+	}
+}
+
+func TestRetrySuccess(t *testing.T) {
+	dir := t.TempDir()
+	dataDir := filepath.Join(dir, "data")
+	tasksDir := filepath.Join(dataDir, "tasks")
+	taskMetaDir := filepath.Join(dataDir, "task_meta")
+	pipelinesDir := filepath.Join(dataDir, "pipelines")
+	runsDir := filepath.Join(dataDir, "runs")
+
+	for _, d := range []string{tasksDir, taskMetaDir, pipelinesDir, runsDir} {
+		os.MkdirAll(d, 0755)
+	}
+
+	// Script that fails on first run, succeeds on second
+	// Uses a counter file to track attempts
+	taskName := "flaky"
+	taskDir := filepath.Join(tasksDir, taskName)
+	os.MkdirAll(taskDir, 0755)
+	// Use a flag file in the shared data dir: if it exists, succeed; else create it and timeout
+	script := `#!/bin/sh
+# flaky.sh: first run times out (sleep long), second run succeeds
+MARKER="$TASK_DATA_READ/retry-marker"
+if [ -f "$MARKER" ]; then
+  echo "second attempt success"
+  exit 0
+fi
+touch "$MARKER"
+sleep 10
+echo "first attempt timeout"
+`
+	os.WriteFile(filepath.Join(taskDir, "run.sh"), []byte(script), 0755)
+
+	meta := task.Meta{
+		Name:           taskName,
+		PackagePath:    "tasks/" + taskName,
+		RunCommand:     "./run.sh",
+		StopCommand:    "",
+		TimeoutEnabled: true,
+		TimeoutSeconds: 1,
+		OnTimeout:      "fail",
+		RetryCount:     1,
+	}
+	writeJSONFile(t, filepath.Join(taskMetaDir, taskName+".json"), meta)
+
+	taskMgr := task.NewManager(tasksDir, taskMetaDir, pipelinesDir)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mgr := NewManager(runsDir, dataDir, taskMgr, logger)
+	mgr.SetPipelineStatusSetter(&stubStatusSetter{})
+
+	tasks := []RunTask{
+		{Name: taskName},
+	}
+	runID, err := mgr.Start("pipeline-1", tasks, "", "test-pipeline")
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	time.Sleep(5 * time.Second)
+
+	events, err := mgr.RunEvents(runID)
+	if err != nil {
+		t.Fatalf("RunEvents: %v", err)
+	}
+	if !strings.Contains(events, "event=retry") {
+		t.Fatalf("expected retry event, got:\n%s", events)
+	}
+
+	instances, err := mgr.RunInfo(runID)
+	if err != nil {
+		t.Fatalf("RunInfo: %v", err)
+	}
+	if instances[0].Status != TaskStatusSuccess {
+		t.Fatalf("expected success after retry, got status=%s\nevents:\n%s", instances[0].Status, events)
+	}
+}
+
+// --- helpers ---
+
+func intPtr(v int) *int { return &v }
+
+func writeJSONFile(t *testing.T, path string, v interface{}) {
+	t.Helper()
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := json.NewEncoder(f).Encode(v); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type stubStatusSetter struct{}
+
+func (s *stubStatusSetter) SetStatus(id, status string) error { return nil }

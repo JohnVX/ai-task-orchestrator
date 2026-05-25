@@ -102,7 +102,8 @@ go build -o ai-task-orchestrator .
   "readme_path": "README.md",
   "timeout_enabled": true,
   "timeout_seconds": 30,
-  "on_timeout": "fail"
+  "on_timeout": "fail",
+  "retry_count": 0
 }
 ```
 
@@ -120,7 +121,7 @@ go build -o ai-task-orchestrator .
   "id": "pipeline-1",
   "name": "我的流水线",
   "tasks": [
-    {"name": "task-A", "timeout_seconds": 30, "on_timeout": "skip"},
+    {"name": "task-A", "timeout_seconds": 30, "on_timeout": "skip", "retry_count": 2},
     {"name": "task-A"},                    ← 同一 task 可重复出现
     {"name": "task-B", "continue_on_failure": true},
     {"name": "task-B"}
@@ -185,7 +186,7 @@ Run 中 task 实例状态：`pending` | `running` | `success` | `failed` | `stop
 | 上传 | `task_xxx.tar` 文件名（去 `.tar`）即 task name，全局唯一，不可改名。解包时若顶层恰好一个目录则直接用，若为散文件则自动用 task name 创建目录包裹。同名拒绝上传。Task name 仅允许字母、数字、下划线、连字符和点。 |
 | 自描述 | 包根目录下 `for-task-orchestrator.txt`，格式 `start: <cmd>` / `stop: <cmd>`，上传时自动解析，优先级高于默认的 `./run.sh` / `./stop.sh`。 |
 | 解析 | 在包目录下大小写不敏感查找 `README.md` / `readme.md` / `readme` / `readme.txt`，优先级：`README.md` > `readme.md` > `readme` > `readme.txt`。找到则解析展示。 |
-| 配置 | 运行/停止命令、超时设置（`timeout_enabled`、`timeout_seconds`、`on_timeout`）及失败继续（`continue_on_failure`）存入 `task_meta/{name}.json`，跨 pipeline 共享。 |
+| 配置 | 运行/停止命令、超时设置（`timeout_enabled`、`timeout_seconds`、`on_timeout`）、失败继续（`continue_on_failure`）及超时重试（`retry_count`）存入 `task_meta/{name}.json`，跨 pipeline 共享。 |
 | 下载 | 将 task 包目录打包为 tar，通过 API 导出。 |
 | 删除 | 查询所有 pipeline 文件，若有关联则拒绝。二次确认后删除包目录 `tasks/{name}/` + 元数据 `task_meta/{name}.json`。 |
 
@@ -248,6 +249,30 @@ Task 默认超时对该 task 在所有 pipeline 中的出现均生效。
 2. 等待 10 秒 → 若进程未退出则发 `SIGKILL` 强杀。
 3. 写 task 实例状态为 `timeout`（区别于主动停止 `stopped` 和异常退出 `failed`）。
 4. 根据超时行为决定流水线是否继续。
+
+### 超时重试（Retry）
+
+超时后可自动重试。仅对超时生效，非零退出的失败不触发重试。手动停止不重试。
+
+```
+超时 → retriesRemaining > 0 ?
+       ├─ 是 → 重新执行 task（立即，无延迟），retriesRemaining--
+       └─ 否 → 走 on_timeout 逻辑（fail/skip）
+```
+
+每个 task 的单次执行（包括重试）都有独立的超时倒计时。
+
+也支持双层配置（task 默认 + pipeline 级覆盖），与超时配置完全相同的继承机制。`retry_count=0` 表示不重试（默认）。
+
+events.log 会记录每次重试：
+
+```
+task=heavy-job[1] event=timeout timeout=30s attempt=1
+task=heavy-job[1] event=retry attempt=2/3
+task=heavy-job[1] event=timeout timeout=30s attempt=2
+task=heavy-job[1] event=retry attempt=3/3
+task=heavy-job[1] status=success
+```
 
 ## 失败继续（Continue-on-Failure）
 
@@ -375,7 +400,6 @@ web/
 ## 后续扩展
 
 - 流水线：循环执行
-- Task：超时重试
 
 ## License
 

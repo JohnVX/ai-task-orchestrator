@@ -17,7 +17,7 @@ const api = {
   getTasks()         { return this.request('GET', '/api/tasks'); },
   uploadTask(file)   { const fd = new FormData(); fd.append('file', file); return this.request('POST', '/api/tasks', fd); },
   getTask(name)      { return this.request('GET', '/api/tasks/' + encodeURIComponent(name)); },
-  updateTask(name, runCmd, stopCmd, timeoutEnabled, timeoutSeconds, onTimeout, continueOnFailure) {
+  updateTask(name, runCmd, stopCmd, timeoutEnabled, timeoutSeconds, onTimeout, continueOnFailure, retryCount) {
     return this.request('PUT', '/api/tasks/' + encodeURIComponent(name), {
       run_command: runCmd,
       stop_command: stopCmd,
@@ -25,6 +25,7 @@ const api = {
       timeout_seconds: timeoutSeconds,
       on_timeout: onTimeout,
       continue_on_failure: continueOnFailure,
+	      retry_count: retryCount,
     });
   },
   deleteTask(name)   { return this.request('DELETE', '/api/tasks/' + encodeURIComponent(name)); },
@@ -109,6 +110,7 @@ async function showTaskDetail(name) {
     panel.querySelector('.task-detail-timeout-action').value = meta.on_timeout || 'fail';
     toggleTimeoutFields(meta.timeout_enabled || false);
     panel.querySelector('.task-detail-continue-on-failure').checked = meta.continue_on_failure || false;
+	    panel.querySelector('.task-detail-retry-count').value = meta.retry_count || 0;
 
     panel.style.display = 'block';
     panel.dataset.taskName = name;
@@ -137,8 +139,9 @@ function initTaskDetailButtons() {
     const timeoutSeconds = parseInt(panel.querySelector('.task-detail-timeout-sec').value, 10) || 0;
     const onTimeout = panel.querySelector('.task-detail-timeout-action').value;
     const continueOnFailure = panel.querySelector('.task-detail-continue-on-failure').checked;
+	    const retryCount = parseInt(panel.querySelector('.task-detail-retry-count').value, 10) || 0;
     try {
-      await api.updateTask(name, runCmd, stopCmd, timeoutEnabled, timeoutSeconds, onTimeout, continueOnFailure);
+      await api.updateTask(name, runCmd, stopCmd, timeoutEnabled, timeoutSeconds, onTimeout, continueOnFailure, retryCount);
       hideTaskDetail();
       renderTaskList();
     } catch (e) { alert('保存失败: ' + e.message); }
@@ -399,10 +402,14 @@ function configureTask(task, idx) {
     ? task.continue_on_failure
     : (meta ? meta.continue_on_failure : false);
 
+	  const effRetry = task.retry_count !== null && task.retry_count !== undefined
+	    ? task.retry_count
+	    : (meta ? (meta.retry_count || 0) : 0);
   document.getElementById('task-config-title').textContent = task.name;
   document.getElementById('task-config-sec').value = effSec !== null ? String(effSec) : '30';
   document.getElementById('task-config-action').value = effAction;
   document.getElementById('task-config-continue').value = effContinue ? 'true' : 'false';
+	  document.getElementById('task-config-retry').value = effRetry;
 
   document.getElementById('task-config-modal').classList.add('open');
 }
@@ -425,6 +432,7 @@ function resetConfig() {
     timeout_seconds: null,
     on_timeout: null,
     continue_on_failure: null,
+	    retry_count: null,
   }).then(() => refreshCanvas()).catch(e => alert('重置失败: ' + e.message));
 }
 
@@ -452,6 +460,7 @@ function confirmConfig() {
     timeout_seconds: secVal !== '' ? parseInt(secVal, 10) : null,
     on_timeout: actionVal || null,
     continue_on_failure: continueVal === 'true' ? true : (continueVal === 'false' ? false : null),
+	    retry_count: parseInt(document.getElementById('task-config-retry').value, 10) || null,
   }).then(() => refreshCanvas()).catch(e => alert('设置失败: ' + e.message));
 }
 

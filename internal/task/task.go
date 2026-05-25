@@ -24,6 +24,7 @@ type Meta struct {
 	TimeoutSeconds    int       `json:"timeout_seconds"`
 	OnTimeout         string    `json:"on_timeout"`
 	ContinueOnFailure bool      `json:"continue_on_failure"`
+	RetryCount        int       `json:"retry_count"`
 }
 
 // Manager handles task lifecycle: upload, parse, configure, delete.
@@ -321,7 +322,7 @@ func (m *Manager) ParseReadme(name string) (content string, found bool) {
 }
 
 // SetConfig persists task configuration: commands, timeout, continue-on-failure settings.
-func (m *Manager) SetConfig(name, runCmd, stopCmd string, timeoutEnabled bool, timeoutSeconds int, onTimeout string, continueOnFailure bool) error {
+func (m *Manager) SetConfig(name, runCmd, stopCmd string, timeoutEnabled bool, timeoutSeconds int, onTimeout string, continueOnFailure bool, retryCount int) error {
 	meta, err := m.readMeta(name)
 	if err != nil {
 		return fmt.Errorf("task %q not found: %w", name, err)
@@ -332,6 +333,7 @@ func (m *Manager) SetConfig(name, runCmd, stopCmd string, timeoutEnabled bool, t
 	meta.TimeoutSeconds = timeoutSeconds
 	meta.OnTimeout = onTimeout
 	meta.ContinueOnFailure = continueOnFailure
+	meta.RetryCount = retryCount
 	return m.writeMeta(meta)
 }
 

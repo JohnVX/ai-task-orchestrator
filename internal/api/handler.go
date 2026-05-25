@@ -164,12 +164,13 @@ func (h *Handler) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
 		TimeoutSeconds    int    `json:"timeout_seconds"`
 		OnTimeout         string `json:"on_timeout"`
 		ContinueOnFailure bool   `json:"continue_on_failure"`
+		RetryCount        int    `json:"retry_count"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
-	if err := h.Task.SetConfig(name, body.RunCommand, body.StopCommand, body.TimeoutEnabled, body.TimeoutSeconds, body.OnTimeout, body.ContinueOnFailure); err != nil {
+	if err := h.Task.SetConfig(name, body.RunCommand, body.StopCommand, body.TimeoutEnabled, body.TimeoutSeconds, body.OnTimeout, body.ContinueOnFailure, body.RetryCount); err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
@@ -253,7 +254,7 @@ func (h *Handler) handleGetPipeline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Enrich tasks with metadata and pipeline-level timeout overrides.
+	// Enrich tasks with metadata and pipeline-level overrides.
 	type taskInfo struct {
 		Name              string  `json:"name"`
 		RunCmd            string  `json:"run_command"`
@@ -262,6 +263,7 @@ func (h *Handler) handleGetPipeline(w http.ResponseWriter, r *http.Request) {
 		TimeoutSeconds    *int    `json:"timeout_seconds,omitempty"`
 		OnTimeout         *string `json:"on_timeout,omitempty"`
 		ContinueOnFailure *bool   `json:"continue_on_failure,omitempty"`
+		RetryCount        *int    `json:"retry_count,omitempty"`
 	}
 	tasks := make([]taskInfo, 0, len(p.Tasks))
 	for _, ref := range p.Tasks {
@@ -270,6 +272,7 @@ func (h *Handler) handleGetPipeline(w http.ResponseWriter, r *http.Request) {
 			TimeoutSeconds:    ref.TimeoutSeconds,
 			OnTimeout:         ref.OnTimeout,
 			ContinueOnFailure: ref.ContinueOnFailure,
+			RetryCount:        ref.RetryCount,
 		}
 		if meta, err := h.Task.Get(ref.Name); err == nil {
 			info.RunCmd = meta.RunCommand
@@ -299,6 +302,7 @@ func (h *Handler) handleUpdatePipeline(w http.ResponseWriter, r *http.Request) {
 		TimeoutSeconds    *int     `json:"timeout_seconds,omitempty"`
 		OnTimeout         *string  `json:"on_timeout,omitempty"`
 		ContinueOnFailure *bool    `json:"continue_on_failure,omitempty"`
+		RetryCount        *int     `json:"retry_count,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
@@ -322,7 +326,7 @@ func (h *Handler) handleUpdatePipeline(w http.ResponseWriter, r *http.Request) {
 	case "set_webhook":
 		err = h.Pipeline.SetWebhook(id, body.WebhookURL)
 	case "set_task_config":
-		err = h.Pipeline.SetTaskConfig(id, body.TaskIndex, body.TimeoutSeconds, body.OnTimeout, body.ContinueOnFailure)
+		err = h.Pipeline.SetTaskConfig(id, body.TaskIndex, body.TimeoutSeconds, body.OnTimeout, body.ContinueOnFailure, body.RetryCount)
 	default:
 		writeError(w, http.StatusBadRequest, "unknown action: "+body.Action)
 		return
@@ -367,6 +371,7 @@ func (h *Handler) handleStartPipeline(w http.ResponseWriter, r *http.Request) {
 			TimeoutSeconds:    ref.TimeoutSeconds,
 			OnTimeout:         ref.OnTimeout,
 			ContinueOnFailure: ref.ContinueOnFailure,
+			RetryCount:        ref.RetryCount,
 		}
 	}
 	runID, err := h.Runner.Start(id, runTasks, p.WebhookURL, p.Name)
@@ -420,6 +425,7 @@ func (h *Handler) handleContinueRun(w http.ResponseWriter, r *http.Request) {
 			TimeoutSeconds:    ref.TimeoutSeconds,
 			OnTimeout:         ref.OnTimeout,
 			ContinueOnFailure: ref.ContinueOnFailure,
+			RetryCount:        ref.RetryCount,
 		}
 	}
 	if err := h.Runner.ContinueRun(body.PipelineID, runID, runTasks, p.WebhookURL, p.Name); err != nil {
@@ -460,7 +466,6 @@ func (h *Handler) handleListRuns(w http.ResponseWriter, r *http.Request) {
 		if filterPipeline != "" && pipelineID != filterPipeline {
 			continue
 		}
-		// Compute overall run status from task instances.
 		runStatus := runner.ComputeRunStatus(instances)
 		size, _ := h.Runner.RunDirSize(e.Name())
 		runs = append(runs, runSummary{

@@ -149,9 +149,11 @@ func runScheduler(pipeMgr *pipeline.Manager, runMgr *runner.Manager, logger *slo
 			runTasks := make([]runner.RunTask, len(p.Tasks))
 			for i, ref := range p.Tasks {
 				runTasks[i] = runner.RunTask{
-					Name:           ref.Name,
-					TimeoutSeconds: ref.TimeoutSeconds,
-					OnTimeout:      ref.OnTimeout,
+					Name:              ref.Name,
+					TimeoutSeconds:    ref.TimeoutSeconds,
+					OnTimeout:         ref.OnTimeout,
+					ContinueOnFailure: ref.ContinueOnFailure,
+					RetryCount:        ref.RetryCount,
 				}
 			}
 			if _, err := runMgr.Start(p.ID, runTasks, p.WebhookURL, p.Name); err != nil {

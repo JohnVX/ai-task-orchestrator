@@ -24,6 +24,7 @@ type TaskRef struct {
 	TimeoutSeconds    *int    `json:"timeout_seconds,omitempty"`    // nil=inherit, 0=disable, >0=seconds
 	OnTimeout         *string `json:"on_timeout,omitempty"`         // nil=inherit
 	ContinueOnFailure *bool   `json:"continue_on_failure,omitempty"` // nil=inherit
+	RetryCount        *int    `json:"retry_count,omitempty"`         // nil=inherit
 }
 
 // Pipeline represents a named, ordered sequence of tasks.
@@ -292,9 +293,12 @@ func (m *Manager) SetWebhook(id, webhookURL string) error {
 // SetTaskConfig updates overrides for a specific task within a pipeline.
 // Pass nil for pointer fields to inherit the task default.
 // onTimeout, when non-nil, must be "skip" or "fail".
-func (m *Manager) SetTaskConfig(pipelineID string, taskIndex int, timeoutSeconds *int, onTimeout *string, continueOnFailure *bool) error {
+func (m *Manager) SetTaskConfig(pipelineID string, taskIndex int, timeoutSeconds *int, onTimeout *string, continueOnFailure *bool, retryCount *int) error {
 	if onTimeout != nil && *onTimeout != "skip" && *onTimeout != "fail" {
 		return fmt.Errorf("on_timeout must be \"skip\", \"fail\", or null to inherit")
+	}
+	if retryCount != nil && *retryCount < 0 {
+		return fmt.Errorf("retry_count must be >= 0")
 	}
 	p, err := m.readPipeline(pipelineID)
 	if err != nil {
@@ -309,6 +313,7 @@ func (m *Manager) SetTaskConfig(pipelineID string, taskIndex int, timeoutSeconds
 	p.Tasks[taskIndex].TimeoutSeconds = timeoutSeconds
 	p.Tasks[taskIndex].OnTimeout = onTimeout
 	p.Tasks[taskIndex].ContinueOnFailure = continueOnFailure
+	p.Tasks[taskIndex].RetryCount = retryCount
 	return m.writePipeline(p)
 }
 
