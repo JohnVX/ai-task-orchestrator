@@ -346,40 +346,40 @@ function renderPipelineTasks(pipeline, tasks, runningTask, runningTaskIdx, highl
     });
   }
 
-  // Show loop info
-    loopInfo.innerHTML = '🔄 ' + (pipeline.loop_count === 0 ? '永久循环' : '循环 ' + pipeline.loop_count + ' 次') + (runningIter > 0 ? ' — 第 ' + runningIter + '/' + (pipeline.loop_count === 0 ? '∞' : pipeline.loop_count) + ' 次' : '') +
-      (pipeline.status !== 'running'
-        ? ' <a href="#" id="loop-edit" style="font-size:0.8rem;color:#1a73e8;text-decoration:none">[修改]</a>'
-        : '');
-    loopInfo.style.display = 'block';
-  } else if (pipeline.status !== 'running') {
-    loopInfo.innerHTML = '<a href="#" id="loop-edit" style="font-size:0.8rem;color:#1a73e8;text-decoration:none">添加循环执行</a>';
-    loopInfo.style.display = 'block';
-  } else {
-    loopInfo.style.display = 'none';
-  }
-  const loopEditLink = document.getElementById('loop-edit');
-  if (loopEditLink) {
-    loopEditLink.addEventListener('click', (e) => {
-      e.preventDefault();
-      const cur = pipeline.loop_count;
-      const label = cur !== null && cur !== undefined ? (cur === 0 ? '永久' : String(cur)) : '';
-      const val = prompt('循环执行次数（0=永久，留空=不循环）：', label);
-      if (val === null) return;
-      const trimmed = val.trim();
-      let lc = null;
-      if (trimmed !== '') {
-        const n = parseInt(trimmed, 10);
-        if (isNaN(n) || n < 0) { alert('请输入 >= 0 的数字'); return; }
-        lc = n;
-      }
-      api.request('PUT', '/api/pipelines/' + currentPipelineId, {
-        action: 'set_loop',
-        loop_count: lc,
-      }).then(() => refreshCanvas()).catch(e => alert('修改失败: ' + e.message));
-    });
-  }
-
+	  // Show loop info
+	  if (pipeline.loop_count !== null && pipeline.loop_count !== undefined) {
+	    loopInfo.innerHTML = '🔄 ' + (pipeline.loop_count === 0 ? '永久循环' : '循环 ' + pipeline.loop_count + ' 次') + (runningIter > 0 ? ' — 第 ' + runningIter + '/' + (pipeline.loop_count === 0 ? '∞' : pipeline.loop_count) + ' 次' : '') +
+	      (pipeline.status !== 'running'
+	        ? ' <a href="#" id="loop-edit" style="font-size:0.8rem;color:#1a73e8;text-decoration:none">[修改]</a>'
+	        : '');
+	    loopInfo.style.display = 'block';
+	  } else if (pipeline.status !== 'running') {
+	    loopInfo.innerHTML = '<a href="#" id="loop-edit" style="font-size:0.8rem;color:#1a73e8;text-decoration:none">添加循环执行</a>';
+	    loopInfo.style.display = 'block';
+	  } else {
+	    loopInfo.style.display = 'none';
+	  }
+	  const loopEditLink = document.getElementById('loop-edit');
+	  if (loopEditLink) {
+	    loopEditLink.addEventListener('click', (e) => {
+	      e.preventDefault();
+	      const cur = pipeline.loop_count;
+	      const label = cur !== null && cur !== undefined ? (cur === 0 ? '永久' : String(cur)) : '';
+	      const val = prompt('循环执行次数（0=永久，留空=不循环）：', label);
+	      if (val === null) return;
+	      const trimmed = val.trim();
+	      let lc = null;
+	      if (trimmed !== '') {
+	        const n = parseInt(trimmed, 10);
+	        if (isNaN(n) || n < 0) { alert('请输入 >= 0 的数字'); return; }
+	        lc = n;
+	      }
+	      api.request('PUT', '/api/pipelines/' + currentPipelineId, {
+	        action: 'set_loop',
+	        loop_count: lc,
+	      }).then(() => refreshCanvas()).catch(e => alert('修改失败: ' + e.message));
+	    });
+	  }
   tasks.forEach((t, idx) => {
     const li = document.createElement('li');
     const span = document.createElement('span');
