@@ -30,7 +30,7 @@ const api = {
   },
   deleteTask(name)   { return this.request('DELETE', '/api/tasks/' + encodeURIComponent(name)); },
   getPipelines()     { return this.request('GET', '/api/pipelines'); },
-  createPipeline(name, schedule, webhookUrl) { return this.request('POST', '/api/pipelines', { name, schedule, webhook_url: webhookUrl }); },
+  createPipeline(name, schedule, webhookUrl, loopCount) { return this.request('POST', '/api/pipelines', { name, schedule, webhook_url: webhookUrl, loop_count: loopCount }); },
   getPipeline(id)    { return this.request('GET', '/api/pipelines/' + id); },
   addTask(id, taskName) { return this.request('PUT', '/api/pipelines/' + id, { action: 'add_task', task_name: taskName }); },
   removeTask(id, taskIndex) { return this.request('PUT', '/api/pipelines/' + id, { action: 'remove_task', task_index: taskIndex }); },
@@ -219,11 +219,14 @@ function initPipelineCreate() {
     if (!name) return;
     const schedule = document.getElementById('pipeline-schedule').value.trim() || undefined;
     const webhookUrl = document.getElementById('pipeline-webhook').value.trim() || undefined;
+    const loopVal = document.getElementById('pipeline-loop').value.trim();
+    const loopCount = loopVal !== '' ? parseInt(loopVal, 10) : undefined;
     try {
-      await api.createPipeline(name, schedule, webhookUrl);
+      await api.createPipeline(name, schedule, webhookUrl, loopCount);
       nameInput.value = '';
       document.getElementById('pipeline-schedule').value = '';
       document.getElementById('pipeline-webhook').value = '';
+      document.getElementById('pipeline-loop').value = '';
       renderPipelineList();
     } catch (e) { alert('创建失败: ' + e.message); }
   });
@@ -316,6 +319,7 @@ function renderPipelineTasks(pipeline, tasks, runningTask, runningTaskIdx, highl
   }
 
   // Show webhook info
+  const loopInfo = document.getElementById('pipeline-loop-info');
   const webhookInfo = document.getElementById('pipeline-webhook-info');
   if (pipeline.webhook_url) {
     webhookInfo.innerHTML = '🔗 ' + pipeline.webhook_url +

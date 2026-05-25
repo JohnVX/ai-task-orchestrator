@@ -229,6 +229,7 @@ func (h *Handler) handleCreatePipeline(w http.ResponseWriter, r *http.Request) {
 		Name       string `json:"name"`
 		Schedule   string `json:"schedule"`
 		WebhookURL string `json:"webhook_url"`
+		LoopCount  *int   `json:"loop_count,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Name == "" {
 		writeError(w, http.StatusBadRequest, "pipeline name required")
@@ -238,7 +239,7 @@ func (h *Handler) handleCreatePipeline(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid cron expression")
 		return
 	}
-	p, err := h.Pipeline.Create(body.Name, body.Schedule, body.WebhookURL)
+	p, err := h.Pipeline.Create(body.Name, body.Schedule, body.WebhookURL, body.LoopCount)
 	if err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return
@@ -374,7 +375,7 @@ func (h *Handler) handleStartPipeline(w http.ResponseWriter, r *http.Request) {
 			RetryCount:        ref.RetryCount,
 		}
 	}
-	runID, err := h.Runner.Start(id, runTasks, p.WebhookURL, p.Name)
+	runID, err := h.Runner.Start(id, runTasks, p.WebhookURL, p.Name, resolveLoopCount(p.LoopCount))
 	if err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return
@@ -600,4 +601,12 @@ func (h *Handler) handleIndex(w http.ResponseWriter, r *http.Request) {
 // RecoverOnStartup is called by main to clean up stale locks.
 func (h *Handler) RecoverOnStartup() error {
 	return h.Runner.RecoverOnStartup()
+}
+
+
+func resolveLoopCount(lc *int) int {
+	if lc == nil {
+		return 1
+	}
+	return *lc
 }

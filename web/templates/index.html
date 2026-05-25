@@ -29,6 +29,7 @@
         <input type="text" id="pipeline-name" placeholder="流水线名称">
         <input type="text" id="pipeline-schedule" placeholder="*/30 * * * *（可选，cron 定时表达式）">
         <input type="text" id="pipeline-webhook" placeholder="https://hooks.example.com/notify（可选，webhook URL）">
+        <input type="number" id="pipeline-loop" min="0" placeholder="循环执行次数（可选，0=永久，未填=不循环）">
         <button id="pipeline-create-btn">创建</button>
       </div>
       <ul id="pipeline-list"></ul>
@@ -78,7 +79,8 @@
         <button id="pipeline-delete-btn">删除</button>
       </div>
       <div id="pipeline-schedule-info" style="display:none;font-size:0.85rem;color:#666;margin:8px 0 12px 0"></div>
-      <div id="pipeline-webhook-info" style="display:none;font-size:0.85rem;color:#666;margin:8px 0 12px 0"></div>
+      <div id="pipeline-webhook-info" style="display:none;font-size:0.85rem;color:#666;margin:8px 0 0 0"></div>
+      <div id="pipeline-loop-info" style="display:none;font-size:0.85rem;color:#520;margin:4px 0 12px 0"></div>
       <ul id="pipeline-task-list"></ul>
       <div id="run-history">
         <h3>运行历史</h3>

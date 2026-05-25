@@ -375,7 +375,7 @@ func TestRetryOnTimeout(t *testing.T) {
 	tasks := []RunTask{
 		{Name: taskName, RetryCount: intPtr(1)},
 	}
-	runID, err := mgr.Start("pipeline-1", tasks, "", "test-pipeline")
+	runID, err := mgr.Start("pipeline-1", tasks, "", "test-pipeline", 1)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -444,7 +444,7 @@ func TestNoRetryOnNonTimeoutFailure(t *testing.T) {
 	tasks := []RunTask{
 		{Name: taskName},
 	}
-	runID, err := mgr.Start("pipeline-1", tasks, "", "test-pipeline")
+	runID, err := mgr.Start("pipeline-1", tasks, "", "test-pipeline", 1)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -520,7 +520,7 @@ echo "first attempt timeout"
 	tasks := []RunTask{
 		{Name: taskName},
 	}
-	runID, err := mgr.Start("pipeline-1", tasks, "", "test-pipeline")
+	runID, err := mgr.Start("pipeline-1", tasks, "", "test-pipeline", 1)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -563,3 +563,61 @@ func writeJSONFile(t *testing.T, path string, v interface{}) {
 type stubStatusSetter struct{}
 
 func (s *stubStatusSetter) SetStatus(id, status string) error { return nil }
+
+func TestLoopExecution(t *testing.T) {
+	dir := t.TempDir()
+	dataDir := filepath.Join(dir, "data")
+	tasksDir := filepath.Join(dataDir, "tasks")
+	taskMetaDir := filepath.Join(dataDir, "task_meta")
+	pipelinesDir := filepath.Join(dataDir, "pipelines")
+	runsDir := filepath.Join(dataDir, "runs")
+
+	for _, d := range []string{tasksDir, taskMetaDir, pipelinesDir, runsDir} {
+		os.MkdirAll(d, 0755)
+	}
+
+	taskName := "quick"
+	taskDir := filepath.Join(tasksDir, taskName)
+	os.MkdirAll(taskDir, 0755)
+	os.WriteFile(filepath.Join(taskDir, "run.sh"), []byte("#!/bin/sh\necho ok\nexit 0\n"), 0755)
+
+	meta := task.Meta{
+		Name:           taskName,
+		PackagePath:    "tasks/" + taskName,
+		RunCommand:     "./run.sh",
+	}
+	writeJSONFile(t, filepath.Join(taskMetaDir, taskName+".json"), meta)
+
+	taskMgr := task.NewManager(tasksDir, taskMetaDir, pipelinesDir)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mgr := NewManager(runsDir, dataDir, taskMgr, logger)
+	mgr.SetPipelineStatusSetter(&stubStatusSetter{})
+
+	tasks := []RunTask{{Name: taskName}}
+	runID, err := mgr.Start("pipeline-1", tasks, "", "test-pipeline", 2)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	time.Sleep(1 * time.Second)
+
+	// Check both iterations created runs
+	entries, err := os.ReadDir(runsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runCount := 0
+	for _, e := range entries {
+		if e.IsDir() && strings.HasPrefix(e.Name(), "run-pipeline-1-") {
+			runCount++
+		}
+	}
+	if runCount != 2 {
+		t.Fatalf("expected 2 runs for loop_count=2, got %d", runCount)
+	}
+
+	// Verify first run ID was returned
+	if !strings.HasPrefix(runID, "run-pipeline-1-") {
+		t.Fatalf("unexpected run ID: %s", runID)
+	}
+}

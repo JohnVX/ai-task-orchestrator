@@ -198,7 +198,8 @@ func (m *Manager) appendEvent(runID, format string, args ...any) {
 // --- public methods ---
 
 // Start begins pipeline execution. Multiple pipelines can run concurrently.
-func (m *Manager) Start(pipelineID string, tasks []RunTask, webhookURL string, pipelineName string) (runID string, err error) {
+// loopCount: 0=forever, >0=exact count. Passing 0 with no loop config = run once (handled by caller).
+func (m *Manager) Start(pipelineID string, tasks []RunTask, webhookURL string, pipelineName string, loopCount int) (runID string, err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -238,15 +239,22 @@ func (m *Manager) Start(pipelineID string, tasks []RunTask, webhookURL string, p
 	m.logger.Info("pipeline started", "pipeline_id", pipelineID, "run_id", runID)
 	m.appendEvent(runID, "%s pipeline=%s event=pipeline_started", time.Now().UTC().Format(time.RFC3339), pipelineID)
 
+	if loopCount == 0 {
+		m.logger.Info("pipeline loop forever", "pipeline_id", pipelineID)
+	} else if loopCount > 1 {
+		m.logger.Info("pipeline loop configured", "pipeline_id", pipelineID, "loop_count", loopCount)
+	}
+
 	ctl := &runControl{stopCh: make(chan struct{})}
 	m.running[pipelineID] = ctl
 
-	go m.runLoop(pipelineID, runID, runDir, tasks, ctl, webhookURL, pipelineName, 0)
+	go m.runLoop(pipelineID, runID, runDir, tasks, ctl, webhookURL, pipelineName, 0, loopCount)
 
 	return runID, nil
 }
 
 // ContinueRun retries from the first non-successful task, reusing the same run directory.
+// Loop is not supported for continue — it completes the current run only.
 func (m *Manager) ContinueRun(pipelineID, runID string, tasks []RunTask, webhookURL string, pipelineName string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -308,12 +316,12 @@ func (m *Manager) ContinueRun(pipelineID, runID string, tasks []RunTask, webhook
 	ctl := &runControl{stopCh: make(chan struct{})}
 	m.running[pipelineID] = ctl
 
-	go m.runLoop(pipelineID, runID, runDir, tasks, ctl, webhookURL, pipelineName, startIdx)
+	go m.runLoop(pipelineID, runID, runDir, tasks, ctl, webhookURL, pipelineName, startIdx, 0)
 
 	return nil
 }
 
-func (m *Manager) runLoop(pipelineID, runID, runDir string, tasks []RunTask, ctl *runControl, webhookURL string, pipelineName string, startIdx int) {
+func (m *Manager) runLoop(pipelineID, runID, runDir string, tasks []RunTask, ctl *runControl, webhookURL string, pipelineName string, startIdx int, loopCount int) {
 	defer func() {
 		m.removeFromState(pipelineID)
 		m.logger.Info("pipeline finished", "pipeline_id", pipelineID, "run_id", runID)
@@ -328,242 +336,267 @@ func (m *Manager) runLoop(pipelineID, runID, runDir string, tasks []RunTask, ctl
 		}
 	}()
 
-	for i, rt := range tasks {
-		if i < startIdx {
-			continue
-		}
-		taskName := rt.Name
-		logName := fmt.Sprintf("%s[%d]", taskName, i+1)
-		taskDir := filepath.Join(runDir, fmt.Sprintf("%s-%d", taskName, i))
+	for iteration := 0; loopCount == 0 || iteration < loopCount; iteration++ {
+		if iteration > 0 {
+			// Setup new run for this iteration.
+			runID = m.nextRunID(pipelineID)
+			runDir = filepath.Join(m.runsDir, runID)
+			os.MkdirAll(filepath.Join(runDir, "task-data-1"), 0755)
+			os.MkdirAll(filepath.Join(runDir, "task-data-2"), 0755)
+			for i, t := range tasks {
+				os.MkdirAll(filepath.Join(runDir, fmt.Sprintf("%s-%d", t.Name, i)), 0755)
+			}
 
+			m.updateStateRunID(pipelineID, runID, tasks[0].Name)
+			m.logger.Info("loop iteration started", "pipeline_id", pipelineID, "run_id", runID, "iteration", iteration+1)
+			m.appendEvent(runID, "%s pipeline=%s event=pipeline_started iteration=%d", time.Now().UTC().Format(time.RFC3339), pipelineID, iteration+1)
+			startIdx = 0
+		}
+
+		// Check stop before each iteration.
 		select {
 		case <-ctl.stopCh:
-			m.markTask(taskDir, taskName, runID, pipelineID, TaskStatusPending, nil, i)
-			m.logger.Info("task status changed", "run_id", runID, "task", logName, "status", TaskStatusPending)
-			m.appendEvent(runID, "%s task=%s status=%s", time.Now().UTC().Format(time.RFC3339), logName, TaskStatusPending)
 			return
 		default:
 		}
 
-		meta, err := m.taskMgr.Get(taskName)
-		if err != nil {
-			m.markTask(taskDir, taskName, runID, pipelineID, TaskStatusFailed, nil, i)
-			m.logger.Info("task status changed", "run_id", runID, "task", logName, "status", TaskStatusFailed)
-			m.appendEvent(runID, "%s task=%s status=%s", time.Now().UTC().Format(time.RFC3339), logName, TaskStatusFailed)
-			return
-		}
+		for i, rt := range tasks {
+			if i < startIdx {
+				continue
+			}
+			taskName := rt.Name
+			logName := fmt.Sprintf("%s[%d]", taskName, i+1)
+			taskDir := filepath.Join(runDir, fmt.Sprintf("%s-%d", taskName, i))
 
-		m.updateState(pipelineID, taskName, runID, i)
+			select {
+			case <-ctl.stopCh:
+				m.markTask(taskDir, taskName, runID, pipelineID, TaskStatusPending, nil, i)
+				m.logger.Info("task status changed", "run_id", runID, "task", logName, "status", TaskStatusPending)
+				m.appendEvent(runID, "%s task=%s status=%s", time.Now().UTC().Format(time.RFC3339), logName, TaskStatusPending)
+				return
+			default:
+			}
 
-		var writeBuf, readBuf string
-		if i%2 == 0 {
-			writeBuf, readBuf = "task-data-1", "task-data-2"
-		} else {
-			writeBuf, readBuf = "task-data-2", "task-data-1"
-		}
+			meta, err := m.taskMgr.Get(taskName)
+			if err != nil {
+				m.markTask(taskDir, taskName, runID, pipelineID, TaskStatusFailed, nil, i)
+				m.logger.Info("task status changed", "run_id", runID, "task", logName, "status", TaskStatusFailed)
+				m.appendEvent(runID, "%s task=%s status=%s", time.Now().UTC().Format(time.RFC3339), logName, TaskStatusFailed)
+				return
+			}
 
-		// Resolve effective configs (pipeline override > task default).
-		timeoutSec := 0
-		if rt.TimeoutSeconds != nil {
-			timeoutSec = *rt.TimeoutSeconds
-		} else if meta.TimeoutEnabled {
-			timeoutSec = meta.TimeoutSeconds
-		}
+			m.updateState(pipelineID, taskName, runID, i)
 
-		onTimeout := "fail"
-		if rt.OnTimeout != nil {
-			onTimeout = *rt.OnTimeout
-		} else if meta.OnTimeout != "" {
-			onTimeout = meta.OnTimeout
-		}
-
-		continueOnFailure := false
-		if rt.ContinueOnFailure != nil {
-			continueOnFailure = *rt.ContinueOnFailure
-		} else {
-			continueOnFailure = meta.ContinueOnFailure
-		}
-
-		retryCount := 0
-		if rt.RetryCount != nil {
-			retryCount = *rt.RetryCount
-		} else {
-			retryCount = meta.RetryCount
-		}
-		maxAttempts := retryCount + 1
-
-		var execErr error
-		var timedOut bool
-		var firstStartAt time.Time
-		var finalAttempt int
-
-		for attempt := 0; attempt < maxAttempts; attempt++ {
-			finalAttempt = attempt
-			if attempt > 0 {
-				m.logger.Info("task retry", "run_id", runID, "task", logName, "attempt", attempt+1, "max_attempts", maxAttempts)
-				m.appendEvent(runID, "%s task=%s event=retry attempt=%d/%d", time.Now().UTC().Format(time.RFC3339), logName, attempt+1, maxAttempts)
-				if err := clearDir(filepath.Join(runDir, writeBuf)); err != nil {
-					m.logger.Warn("clear write buffer", "dir", writeBuf, "error", err)
-				}
+			var writeBuf, readBuf string
+			if i%2 == 0 {
+				writeBuf, readBuf = "task-data-1", "task-data-2"
 			} else {
-				if err := clearDir(filepath.Join(runDir, writeBuf)); err != nil {
-					m.logger.Warn("clear write buffer", "dir", writeBuf, "error", err)
+				writeBuf, readBuf = "task-data-2", "task-data-1"
+			}
+
+			// Resolve effective configs (pipeline override > task default).
+			timeoutSec := 0
+			if rt.TimeoutSeconds != nil {
+				timeoutSec = *rt.TimeoutSeconds
+			} else if meta.TimeoutEnabled {
+				timeoutSec = meta.TimeoutSeconds
+			}
+
+			onTimeout := "fail"
+			if rt.OnTimeout != nil {
+				onTimeout = *rt.OnTimeout
+			} else if meta.OnTimeout != "" {
+				onTimeout = meta.OnTimeout
+			}
+
+			continueOnFailure := false
+			if rt.ContinueOnFailure != nil {
+				continueOnFailure = *rt.ContinueOnFailure
+			} else {
+				continueOnFailure = meta.ContinueOnFailure
+			}
+
+			retryCount := 0
+			if rt.RetryCount != nil {
+				retryCount = *rt.RetryCount
+			} else {
+				retryCount = meta.RetryCount
+			}
+			maxAttempts := retryCount + 1
+
+			var execErr error
+			var timedOut bool
+			var firstStartAt time.Time
+			var finalAttempt int
+
+			for attempt := 0; attempt < maxAttempts; attempt++ {
+				finalAttempt = attempt
+				if attempt > 0 {
+					m.logger.Info("task retry", "run_id", runID, "task", logName, "attempt", attempt+1, "max_attempts", maxAttempts)
+					m.appendEvent(runID, "%s task=%s event=retry attempt=%d/%d", time.Now().UTC().Format(time.RFC3339), logName, attempt+1, maxAttempts)
+					if err := clearDir(filepath.Join(runDir, writeBuf)); err != nil {
+						m.logger.Warn("clear write buffer", "dir", writeBuf, "error", err)
+					}
+				} else {
+					if err := clearDir(filepath.Join(runDir, writeBuf)); err != nil {
+						m.logger.Warn("clear write buffer", "dir", writeBuf, "error", err)
+					}
 				}
-			}
 
-			attemptStart := time.Now().UTC()
-			if attempt == 0 {
-				firstStartAt = attemptStart
-			}
-			writeTaskMeta(taskDir, taskName, runID, pipelineID, TaskStatusRunning, &attemptStart, nil, -1, i)
-			if attempt == 0 {
-				m.logger.Info("task status changed", "run_id", runID, "task", logName, "status", TaskStatusRunning)
-				m.appendEvent(runID, "%s task=%s status=%s", time.Now().UTC().Format(time.RFC3339), logName, TaskStatusRunning)
-			}
+				attemptStart := time.Now().UTC()
+				if attempt == 0 {
+					firstStartAt = attemptStart
+				}
+				writeTaskMeta(taskDir, taskName, runID, pipelineID, TaskStatusRunning, &attemptStart, nil, -1, i)
+				if attempt == 0 {
+					m.logger.Info("task status changed", "run_id", runID, "task", logName, "status", TaskStatusRunning)
+					m.appendEvent(runID, "%s task=%s status=%s", time.Now().UTC().Format(time.RFC3339), logName, TaskStatusRunning)
+				}
 
-			cmd := exec.Command("sh", "-c", meta.RunCommand)
-			cmd.Dir = filepath.Join(m.dataDir, meta.PackagePath)
-			cmd.Env = append(os.Environ(),
-				"TASK_DATA_READ="+filepath.Join(runDir, readBuf),
-				"TASK_DATA_WRITE="+filepath.Join(runDir, writeBuf),
-				"TASK_DATA_1="+filepath.Join(runDir, "task-data-1"),
-				"TASK_DATA_2="+filepath.Join(runDir, "task-data-2"),
-			)
+				cmd := exec.Command("sh", "-c", meta.RunCommand)
+				cmd.Dir = filepath.Join(m.dataDir, meta.PackagePath)
+				cmd.Env = append(os.Environ(),
+					"TASK_DATA_READ="+filepath.Join(runDir, readBuf),
+					"TASK_DATA_WRITE="+filepath.Join(runDir, writeBuf),
+					"TASK_DATA_1="+filepath.Join(runDir, "task-data-1"),
+					"TASK_DATA_2="+filepath.Join(runDir, "task-data-2"),
+				)
 
-			stdoutF, cerr := os.Create(filepath.Join(taskDir, "stdout.log"))
-			if cerr != nil {
-				m.logger.Warn("create stdout log", "error", cerr)
-			}
-			stderrF, cerr := os.Create(filepath.Join(taskDir, "stderr.log"))
-			if cerr != nil {
-				m.logger.Warn("create stderr log", "error", cerr)
-			}
-			cmd.Stdout = stdoutF
-			cmd.Stderr = stderrF
+				stdoutF, cerr := os.Create(filepath.Join(taskDir, "stdout.log"))
+				if cerr != nil {
+					m.logger.Warn("create stdout log", "error", cerr)
+				}
+				stderrF, cerr := os.Create(filepath.Join(taskDir, "stderr.log"))
+				if cerr != nil {
+					m.logger.Warn("create stderr log", "error", cerr)
+				}
+				cmd.Stdout = stdoutF
+				cmd.Stderr = stderrF
 
-			m.mu.Lock()
-			ctl.cmd = cmd
-			m.mu.Unlock()
+				m.mu.Lock()
+				ctl.cmd = cmd
+				m.mu.Unlock()
 
-			if err := cmd.Start(); err != nil {
+				if err := cmd.Start(); err != nil {
+					m.mu.Lock()
+					ctl.cmd = nil
+					m.mu.Unlock()
+					if stdoutF != nil {
+						stdoutF.Close()
+					}
+					if stderrF != nil {
+						stderrF.Close()
+					}
+					execErr = err
+					timedOut = false
+					break
+				}
+
+				var timeoutCh <-chan time.Time
+				if timeoutSec > 0 {
+					timeoutCh = time.After(time.Duration(timeoutSec) * time.Second)
+				}
+
+				waitDone := make(chan error, 1)
+				go func() { waitDone <- cmd.Wait() }()
+
+				timedOut = false
+				select {
+				case execErr = <-waitDone:
+				case <-ctl.stopCh:
+					m.runStopCommand(meta)
+					cmd.Process.Signal(syscall.SIGTERM)
+					select {
+					case execErr = <-waitDone:
+					case <-time.After(10 * time.Second):
+						cmd.Process.Kill()
+						execErr = <-waitDone
+					}
+				case <-timeoutCh:
+					timedOut = true
+					m.logger.Info("task timeout", "run_id", runID, "task", logName, "timeout_seconds", timeoutSec, "attempt", attempt+1)
+					m.appendEvent(runID, "%s task=%s event=timeout timeout=%ds attempt=%d", time.Now().UTC().Format(time.RFC3339), logName, timeoutSec, attempt+1)
+					m.runStopCommand(meta)
+					cmd.Process.Signal(syscall.SIGTERM)
+					select {
+					case execErr = <-waitDone:
+					case <-time.After(10 * time.Second):
+						cmd.Process.Kill()
+						execErr = <-waitDone
+					}
+				}
+
 				m.mu.Lock()
 				ctl.cmd = nil
 				m.mu.Unlock()
+
 				if stdoutF != nil {
 					stdoutF.Close()
 				}
 				if stderrF != nil {
 					stderrF.Close()
 				}
-				execErr = err
-				timedOut = false
+
+				// Success: break out of retry loop.
+				if execErr == nil && !timedOut {
+					break
+				}
+				// Stop or non-timeout exit: don't retry.
+				if !timedOut {
+					break
+				}
+				// Timeout with retries remaining: loop again.
+				if attempt+1 < maxAttempts {
+					continue
+				}
 				break
 			}
 
-			var timeoutCh <-chan time.Time
-			if timeoutSec > 0 {
-				timeoutCh = time.After(time.Duration(timeoutSec) * time.Second)
-			}
+			endedAt := time.Now().UTC()
 
-			waitDone := make(chan error, 1)
-			go func() { waitDone <- cmd.Wait() }()
-
-			timedOut = false
-			select {
-			case execErr = <-waitDone:
-			case <-ctl.stopCh:
-				m.runStopCommand(meta)
-				cmd.Process.Signal(syscall.SIGTERM)
+			if execErr != nil || timedOut {
+				exitCode := -1
+				if execErr != nil {
+					if exitErr, ok := execErr.(*exec.ExitError); ok {
+						exitCode = exitErr.ExitCode()
+					}
+				}
+				status := TaskStatusFailed
 				select {
-				case execErr = <-waitDone:
-				case <-time.After(10 * time.Second):
-					cmd.Process.Kill()
-					execErr = <-waitDone
+				case <-ctl.stopCh:
+					status = TaskStatusStopped
+				default:
 				}
-			case <-timeoutCh:
-				timedOut = true
-				m.logger.Info("task timeout", "run_id", runID, "task", logName, "timeout_seconds", timeoutSec, "attempt", attempt+1)
-				m.appendEvent(runID, "%s task=%s event=timeout timeout=%ds attempt=%d", time.Now().UTC().Format(time.RFC3339), logName, timeoutSec, attempt+1)
-				m.runStopCommand(meta)
-				cmd.Process.Signal(syscall.SIGTERM)
-				select {
-				case execErr = <-waitDone:
-				case <-time.After(10 * time.Second):
-					cmd.Process.Kill()
-					execErr = <-waitDone
+				if timedOut && status != TaskStatusStopped {
+					status = TaskStatusTimeout
 				}
-			}
+				writeTaskMeta(taskDir, taskName, runID, pipelineID, status, &firstStartAt, &endedAt, exitCode, i)
+				m.logger.Info("task status changed", "run_id", runID, "task", logName, "status", status, "exit_code", exitCode)
+				m.appendEvent(runID, "%s task=%s status=%s exit_code=%d", time.Now().UTC().Format(time.RFC3339), logName, status, exitCode)
 
-			m.mu.Lock()
-			ctl.cmd = nil
-			m.mu.Unlock()
-
-			if stdoutF != nil {
-				stdoutF.Close()
-			}
-			if stderrF != nil {
-				stderrF.Close()
-			}
-
-			// Success: break out of retry loop.
-			if execErr == nil && !timedOut {
-				break
-			}
-			// Stop or non-timeout exit: don't retry.
-			if !timedOut {
-				break
-			}
-			// Timeout with retries remaining: loop again.
-			if attempt+1 < maxAttempts {
-				continue
-			}
-			break
-		}
-
-		endedAt := time.Now().UTC()
-
-		if execErr != nil || timedOut {
-			exitCode := -1
-			if execErr != nil {
-				if exitErr, ok := execErr.(*exec.ExitError); ok {
-					exitCode = exitErr.ExitCode()
+				if timedOut && onTimeout == "skip" {
+					m.logger.Info("task timed out but continuing pipeline", "run_id", runID, "task", logName)
+					m.appendEvent(runID, "%s task=%s event=continuing_on_timeout", time.Now().UTC().Format(time.RFC3339), logName)
+					continue
 				}
+				if continueOnFailure && status != TaskStatusStopped {
+					m.logger.Info("task failed but continuing pipeline", "run_id", runID, "task", logName, "status", status)
+					m.appendEvent(runID, "%s task=%s event=continuing_on_failure status=%s", time.Now().UTC().Format(time.RFC3339), logName, status)
+					continue
+				}
+				return
 			}
-			status := TaskStatusFailed
-			select {
-			case <-ctl.stopCh:
-				status = TaskStatusStopped
-			default:
-			}
-			if timedOut && status != TaskStatusStopped {
-				status = TaskStatusTimeout
-			}
-			writeTaskMeta(taskDir, taskName, runID, pipelineID, status, &firstStartAt, &endedAt, exitCode, i)
-			m.logger.Info("task status changed", "run_id", runID, "task", logName, "status", status, "exit_code", exitCode)
-			m.appendEvent(runID, "%s task=%s status=%s exit_code=%d", time.Now().UTC().Format(time.RFC3339), logName, status, exitCode)
 
-			if timedOut && onTimeout == "skip" {
-				m.logger.Info("task timed out but continuing pipeline", "run_id", runID, "task", logName)
-				m.appendEvent(runID, "%s task=%s event=continuing_on_timeout", time.Now().UTC().Format(time.RFC3339), logName)
-				continue
+			writeTaskMeta(taskDir, taskName, runID, pipelineID, TaskStatusSuccess, &firstStartAt, &endedAt, 0, i)
+			if finalAttempt > 0 {
+				m.logger.Info("task status changed", "run_id", runID, "task", logName, "status", TaskStatusSuccess, "attempts", finalAttempt+1)
+			} else {
+				m.logger.Info("task status changed", "run_id", runID, "task", logName, "status", TaskStatusSuccess)
 			}
-			if continueOnFailure && status != TaskStatusStopped {
-				m.logger.Info("task failed but continuing pipeline", "run_id", runID, "task", logName, "status", status)
-				m.appendEvent(runID, "%s task=%s event=continuing_on_failure status=%s", time.Now().UTC().Format(time.RFC3339), logName, status)
-				continue
-			}
-			return
+			m.appendEvent(runID, "%s task=%s status=%s", time.Now().UTC().Format(time.RFC3339), logName, TaskStatusSuccess)
+
+			clearDir(filepath.Join(runDir, readBuf))
 		}
-
-		writeTaskMeta(taskDir, taskName, runID, pipelineID, TaskStatusSuccess, &firstStartAt, &endedAt, 0, i)
-		if finalAttempt > 0 {
-			m.logger.Info("task status changed", "run_id", runID, "task", logName, "status", TaskStatusSuccess, "attempts", finalAttempt+1)
-		} else {
-			m.logger.Info("task status changed", "run_id", runID, "task", logName, "status", TaskStatusSuccess)
-		}
-		m.appendEvent(runID, "%s task=%s status=%s", time.Now().UTC().Format(time.RFC3339), logName, TaskStatusSuccess)
-
-		clearDir(filepath.Join(runDir, readBuf))
 	}
 }
 
@@ -591,6 +624,21 @@ func (m *Manager) updateState(pipelineID, taskName, runID string, taskIndex int)
 		if rp.PipelineID == pipelineID {
 			state.RunningPipelines[i].CurrentTask = taskName
 			state.RunningPipelines[i].TaskIndex = taskIndex
+			break
+		}
+	}
+	m.writeState(state)
+}
+
+func (m *Manager) updateStateRunID(pipelineID, runID, taskName string) {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
+	state, _ := m.readState()
+	for i, rp := range state.RunningPipelines {
+		if rp.PipelineID == pipelineID {
+			state.RunningPipelines[i].CurrentRunID = runID
+			state.RunningPipelines[i].CurrentTask = taskName
+			state.RunningPipelines[i].TaskIndex = 0
 			break
 		}
 	}

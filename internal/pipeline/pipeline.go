@@ -36,6 +36,7 @@ type Pipeline struct {
 	Status      string    `json:"status"`
 	Schedule    string    `json:"schedule,omitempty"`
 	WebhookURL  string    `json:"webhook_url,omitempty"`
+	LoopCount   *int      `json:"loop_count,omitempty"`
 }
 
 // TaskChecker is the interface pipeline needs from the task package.
@@ -115,7 +116,7 @@ func (m *Manager) nextID() string {
 // --- public methods ---
 
 // Create writes a new pipeline definition.
-func (m *Manager) Create(name string, schedule string, webhookURL string) (*Pipeline, error) {
+func (m *Manager) Create(name string, schedule string, webhookURL string, loopCount *int) (*Pipeline, error) {
 	all, err := m.All()
 	if err != nil {
 		return nil, err
@@ -124,6 +125,9 @@ func (m *Manager) Create(name string, schedule string, webhookURL string) (*Pipe
 		if strings.EqualFold(p.Name, name) {
 			return nil, fmt.Errorf("pipeline name %q already exists", name)
 		}
+	}
+	if loopCount != nil && *loopCount < 0 {
+		return nil, fmt.Errorf("loop_count must be >= 0")
 	}
 
 	p := &Pipeline{
@@ -134,6 +138,7 @@ func (m *Manager) Create(name string, schedule string, webhookURL string) (*Pipe
 		Status:      StatusIdle,
 		Schedule:    schedule,
 		WebhookURL:  webhookURL,
+		LoopCount:   loopCount,
 	}
 	if err := m.writePipeline(p); err != nil {
 		return nil, err
@@ -287,6 +292,23 @@ func (m *Manager) SetWebhook(id, webhookURL string) error {
 		return fmt.Errorf("cannot modify webhook while pipeline is running")
 	}
 	p.WebhookURL = webhookURL
+	return m.writePipeline(p)
+}
+
+// SetLoopCount updates the loop count for a pipeline. nil disables looping.
+// 0 = loop forever, N > 0 = execute N times.
+func (m *Manager) SetLoopCount(id string, loopCount *int) error {
+	if loopCount != nil && *loopCount < 0 {
+		return fmt.Errorf("loop_count must be >= 0")
+	}
+	p, err := m.readPipeline(id)
+	if err != nil {
+		return err
+	}
+	if p.Status == StatusRunning {
+		return fmt.Errorf("cannot modify loop count while pipeline is running")
+	}
+	p.LoopCount = loopCount
 	return m.writePipeline(p)
 }
 

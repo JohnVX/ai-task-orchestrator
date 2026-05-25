@@ -23,7 +23,7 @@ func newTestManager(t *testing.T) *Manager {
 
 func mustCreate(t *testing.T, mgr *Manager, name, schedule string) *Pipeline {
 	t.Helper()
-	p, err := mgr.Create(name, schedule, "")
+	p, err := mgr.Create(name, schedule, "", nil)
 	if err != nil {
 		t.Fatalf("Create(%q): %v", name, err)
 	}
@@ -455,7 +455,7 @@ func TestDuplicateTasksAcrossPipelines(t *testing.T) {
 func TestDuplicatePipelineName(t *testing.T) {
 	mgr := newTestManager(t)
 	mustCreate(t, mgr, "MyPipe", "")
-	_, err := mgr.Create("mypipe", "", "")
+	_, err := mgr.Create("mypipe", "", "", nil)
 	if err == nil {
 		t.Fatal("expected error creating pipeline with case-insensitive duplicate name")
 	}

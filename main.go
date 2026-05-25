@@ -156,9 +156,17 @@ func runScheduler(pipeMgr *pipeline.Manager, runMgr *runner.Manager, logger *slo
 					RetryCount:        ref.RetryCount,
 				}
 			}
-			if _, err := runMgr.Start(p.ID, runTasks, p.WebhookURL, p.Name); err != nil {
+			if _, err := runMgr.Start(p.ID, runTasks, p.WebhookURL, p.Name, resolveLoopCount(p.LoopCount)); err != nil {
 				logger.Error("scheduled pipeline start failed", "pipeline_id", p.ID, "error", err)
 			}
 		}
 	}
+}
+
+
+func resolveLoopCount(lc *int) int {
+	if lc == nil {
+		return 1
+	}
+	return *lc
 }
