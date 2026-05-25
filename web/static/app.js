@@ -281,14 +281,14 @@ async function refreshCanvas() {
         });
       }
     } catch (e) { /* ignore */ }
-    renderPipelineTasks(data.pipeline, data.tasks, runningTask, runningTaskIdx, highlightIdx, lastRunStatus);
+    renderPipelineTasks(data.pipeline, data.tasks, runningTask, runningTaskIdx, highlightIdx, lastRunStatus, (state && state.running_pipelines ? (state.running_pipelines.find(p => p.pipeline_id === currentPipelineId) || {}).iteration || 0 : 0), (state && state.running_pipelines ? (state.running_pipelines.find(p => p.pipeline_id === currentPipelineId) || {}).loop_total || 0 : 0));
     updateRunButtons(data.pipeline, lastRunStatus);
   } catch (e) {
     document.getElementById('pipeline-task-list').innerHTML = '<li>加载失败</li>';
   }
 }
 
-function renderPipelineTasks(pipeline, tasks, runningTask, runningTaskIdx, highlightIdx, lastRunStatus) {
+function renderPipelineTasks(pipeline, tasks, runningTask, runningTaskIdx, highlightIdx, lastRunStatus, runningIter, runningLoopTotal) {
   const ul = document.getElementById('pipeline-task-list');
   ul.innerHTML = '';
   // Show schedule info
@@ -347,8 +347,7 @@ function renderPipelineTasks(pipeline, tasks, runningTask, runningTaskIdx, highl
   }
 
   // Show loop info
-  if (pipeline.loop_count !== null && pipeline.loop_count !== undefined) {
-    loopInfo.innerHTML = '🔄 ' + (pipeline.loop_count === 0 ? '永久循环' : '循环 ' + pipeline.loop_count + ' 次') +
+    loopInfo.innerHTML = '🔄 ' + (pipeline.loop_count === 0 ? '永久循环' : '循环 ' + pipeline.loop_count + ' 次') + (runningIter > 0 ? ' — 第 ' + runningIter + '/' + (pipeline.loop_count === 0 ? '∞' : pipeline.loop_count) + ' 次' : '') +
       (pipeline.status !== 'running'
         ? ' <a href="#" id="loop-edit" style="font-size:0.8rem;color:#1a73e8;text-decoration:none">[修改]</a>'
         : '');

@@ -58,6 +58,8 @@ type PipelineRunState struct {
 	CurrentTask  string `json:"current_task"`
 	CurrentRunID string `json:"current_run_id"`
 	TaskIndex    int    `json:"task_index"`
+	Iteration    int    `json:"iteration"`
+	LoopTotal    int    `json:"loop_total"`
 }
 
 // OrchestratorState is the global state persisted to orchestrator_state.json.
@@ -225,6 +227,8 @@ func (m *Manager) Start(pipelineID string, tasks []RunTask, webhookURL string, p
 		state.PID = os.Getpid()
 	}
 	state.RunningPipelines = append(state.RunningPipelines, PipelineRunState{
+			Iteration:    1,
+			LoopTotal:    loopCount,
 		PipelineID:   pipelineID,
 		CurrentTask:  tasks[0].Name,
 		CurrentRunID: runID,
@@ -298,6 +302,8 @@ func (m *Manager) ContinueRun(pipelineID, runID string, tasks []RunTask, webhook
 		state.PID = os.Getpid()
 	}
 	state.RunningPipelines = append(state.RunningPipelines, PipelineRunState{
+			Iteration:    1,
+			LoopTotal:    0,
 		PipelineID:   pipelineID,
 		CurrentTask:  tasks[startIdx].Name,
 		CurrentRunID: runID,
@@ -347,7 +353,7 @@ func (m *Manager) runLoop(pipelineID, runID, runDir string, tasks []RunTask, ctl
 				os.MkdirAll(filepath.Join(runDir, fmt.Sprintf("%s-%d", t.Name, i)), 0755)
 			}
 
-			m.updateStateRunID(pipelineID, runID, tasks[0].Name)
+			m.updateStateRunID(pipelineID, runID, tasks[0].Name, iteration+1, loopCount)
 			m.logger.Info("loop iteration started", "pipeline_id", pipelineID, "run_id", runID, "iteration", iteration+1)
 			m.appendEvent(runID, "%s pipeline=%s event=pipeline_started iteration=%d", time.Now().UTC().Format(time.RFC3339), pipelineID, iteration+1)
 			startIdx = 0
@@ -360,6 +366,7 @@ func (m *Manager) runLoop(pipelineID, runID, runDir string, tasks []RunTask, ctl
 		default:
 		}
 
+		taskLoop:
 		for i, rt := range tasks {
 			if i < startIdx {
 				continue
@@ -584,7 +591,7 @@ func (m *Manager) runLoop(pipelineID, runID, runDir string, tasks []RunTask, ctl
 					m.appendEvent(runID, "%s task=%s event=continuing_on_failure status=%s", time.Now().UTC().Format(time.RFC3339), logName, status)
 					continue
 				}
-				return
+				break taskLoop
 			}
 
 			writeTaskMeta(taskDir, taskName, runID, pipelineID, TaskStatusSuccess, &firstStartAt, &endedAt, 0, i)
@@ -630,7 +637,7 @@ func (m *Manager) updateState(pipelineID, taskName, runID string, taskIndex int)
 	m.writeState(state)
 }
 
-func (m *Manager) updateStateRunID(pipelineID, runID, taskName string) {
+func (m *Manager) updateStateRunID(pipelineID, runID, taskName string, iteration, loopTotal int) {
 	m.stateMu.Lock()
 	defer m.stateMu.Unlock()
 	state, _ := m.readState()
@@ -639,6 +646,8 @@ func (m *Manager) updateStateRunID(pipelineID, runID, taskName string) {
 			state.RunningPipelines[i].CurrentRunID = runID
 			state.RunningPipelines[i].CurrentTask = taskName
 			state.RunningPipelines[i].TaskIndex = 0
+			state.RunningPipelines[i].Iteration = iteration
+			state.RunningPipelines[i].LoopTotal = loopTotal
 			break
 		}
 	}
