@@ -29,6 +29,7 @@ go build -o ai-task-orchestrator .
 | `-port` | `8080` | HTTP 监听端口 |
 | `-data` | `./data` | 数据目录 |
 | `-log-level` | `info` | 日志级别: debug / info / warn / error |
+| `-max-runs` | `100` | 每条 pipeline 最大保留 run 数量，超出删最早的 (0=不限制) |
 
 ## 核心概念
 
@@ -211,6 +212,7 @@ Run 中 task 实例状态：`pending` | `running` | `success` | `failed` | `stop
 | 日志删除 | 按 pipeline 粒度、按 run 粒度均可删除。 |
 | 数据隔离 | 不同 pipeline → 不同 run 目录；同一 run 内不同 task → 不同子目录。 |
 | 磁盘监控 | 记录每个 run 目录的大小，界面上展示。 |
+| 自动清理 | 每条 pipeline 最多保留 N 个 run（`-max-runs` 参数，默认 100），超出后自动删除最早的 run 目录。启动时和每 24 小时执行一次。设为 0 禁用。正在运行的 pipeline 跳过不清理。 |
 | 状态展示 | 运行历史表格默认展示每行 run 的状态（运行中/成功/失败），彩色标示。当前正在运行的 run 高亮显示（蓝色背景 + 左侧脉冲光条），每 3 秒自动刷新。 |
 | 失败高亮 | Pipeline 非运行状态时，最后一个非成功的 task 实例在前端以红色边框和高亮背景标示，指示续跑断点位置。 |
 | 续跑按钮 | Pipeline 非运行状态且最新 run 非成功时，展示"续跑"按钮，点击即从断点继续执行。前端展示 run ID 便于识别。 |
@@ -374,7 +376,6 @@ web/
 
 - 流水线：循环执行
 - Task：超时重试
-- 自动清理过期运行数据
 
 ## License
 

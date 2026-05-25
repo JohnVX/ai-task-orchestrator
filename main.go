@@ -32,6 +32,7 @@ func main() {
 	port := flag.Int("port", 8080, "HTTP listen port")
 	dataDir := flag.String("data", "./data", "data directory path")
 	logLevel := flag.String("log-level", "info", "log level: debug, info, warn, error")
+	maxRuns := flag.Int("max-runs", 100, "max completed runs per pipeline (0=unlimited)")
 	flag.Parse()
 
 	absDataDir, err := filepath.Abs(*dataDir)
@@ -54,6 +55,16 @@ func main() {
 	}
 	slogger.Info("log rotation completed", "compressed", compressed, "deleted", deleted)
 
+	taskMgr := task.NewManager(filepath.Join(absDataDir, "tasks"), filepath.Join(absDataDir, "task_meta"), filepath.Join(absDataDir, "pipelines"))
+	runMgr := runner.NewManager(filepath.Join(absDataDir, "runs"), absDataDir, taskMgr, slogger)
+	pipelineMgr := pipeline.NewManager(filepath.Join(absDataDir, "pipelines"), taskMgr, runMgr)
+	runMgr.SetPipelineStatusSetter(pipelineMgr)
+
+	delRuns, freedBytes := runMgr.CleanupOldRuns(*maxRuns)
+	if delRuns > 0 {
+		slogger.Info("startup cleanup completed", "deleted_runs", delRuns, "freed_bytes", freedBytes)
+	}
+
 	go func() {
 		tk := time.NewTicker(24 * time.Hour)
 		defer tk.Stop()
@@ -62,13 +73,12 @@ func main() {
 			if c+d > 0 {
 				slogger.Info("log rotation", "compressed", c, "deleted", d)
 			}
+			del, freed := runMgr.CleanupOldRuns(*maxRuns)
+			if del > 0 {
+				slogger.Info("periodic cleanup completed", "deleted_runs", del, "freed_bytes", freed)
+			}
 		}
 	}()
-
-	taskMgr := task.NewManager(filepath.Join(absDataDir, "tasks"), filepath.Join(absDataDir, "task_meta"), filepath.Join(absDataDir, "pipelines"))
-	runMgr := runner.NewManager(filepath.Join(absDataDir, "runs"), absDataDir, taskMgr, slogger)
-	pipelineMgr := pipeline.NewManager(filepath.Join(absDataDir, "pipelines"), taskMgr, runMgr)
-	runMgr.SetPipelineStatusSetter(pipelineMgr)
 
 	tmpl := template.Must(template.New("index").Parse(indexHTML))
 	staticFS, _ := fs.Sub(staticFiles, "web/static")
