@@ -258,7 +258,7 @@ func (m *Manager) Start(pipelineID string, tasks []RunTask, webhookURL string, p
 }
 
 // ContinueRun retries from the first non-successful task, reusing the same run directory.
-// Loop is not supported for continue — it completes the current run only.
+// If the pipeline was part of a loop, remaining iterations are preserved.
 func (m *Manager) ContinueRun(pipelineID, runID string, tasks []RunTask, webhookURL string, pipelineName string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -322,7 +322,8 @@ func (m *Manager) ContinueRun(pipelineID, runID string, tasks []RunTask, webhook
 	ctl := &runControl{stopCh: make(chan struct{})}
 	m.running[pipelineID] = ctl
 
-	go m.runLoop(pipelineID, runID, runDir, tasks, ctl, webhookURL, pipelineName, startIdx, 1)
+	remainingLoop := resolveRemainingLoop(runDir)
+	go m.runLoop(pipelineID, runID, runDir, tasks, ctl, webhookURL, pipelineName, startIdx, remainingLoop)
 
 	return nil
 }
@@ -358,6 +359,9 @@ func (m *Manager) runLoop(pipelineID, runID, runDir string, tasks []RunTask, ctl
 			m.appendEvent(runID, "%s pipeline=%s event=pipeline_started iteration=%d", time.Now().UTC().Format(time.RFC3339), pipelineID, iteration+1)
 			startIdx = 0
 		}
+
+		// Write iteration metadata for recovery (ContinueRun needs it).
+		writeIterationMeta(runDir, iteration+1, loopCount)
 
 		// Check stop before each iteration.
 		select {
@@ -1039,6 +1043,37 @@ func (m *Manager) RecoverOnStartup() error {
 
 	m.clearState()
 	return nil
+}
+
+func writeIterationMeta(runDir string, iteration, loopTotal int) {
+	f, err := os.Create(filepath.Join(runDir, "iteration.json"))
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprintf(f, "{\"iteration\":%d,\"loop_total\":%d}\n", iteration, loopTotal)
+}
+
+func resolveRemainingLoop(runDir string) int {
+	data, err := os.ReadFile(filepath.Join(runDir, "iteration.json"))
+	if err != nil {
+		return 1
+	}
+	var it struct {
+		Iteration int `json:"iteration"`
+		LoopTotal int `json:"loop_total"`
+	}
+	if json.Unmarshal(data, &it) != nil {
+		return 1
+	}
+	if it.LoopTotal <= 0 {
+		return 0 // forever loop
+	}
+	remaining := it.LoopTotal - it.Iteration + 1
+	if remaining < 1 {
+		remaining = 1
+	}
+	return remaining
 }
 
 func pidAlive(pid int) bool {
