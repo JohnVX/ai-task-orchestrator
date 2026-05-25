@@ -591,6 +591,9 @@ func (m *Manager) runLoop(pipelineID, runID, runDir string, tasks []RunTask, ctl
 					m.appendEvent(runID, "%s task=%s event=continuing_on_failure status=%s", time.Now().UTC().Format(time.RFC3339), logName, status)
 					continue
 				}
+				if status == TaskStatusStopped {
+					return
+				}
 				break taskLoop
 			}
 
