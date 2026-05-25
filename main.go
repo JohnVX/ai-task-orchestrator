@@ -129,7 +129,9 @@ func runScheduler(pipeMgr *pipeline.Manager, runMgr *runner.Manager, logger *slo
 			continue
 		}
 		now := time.Now()
+		activeIDs := make(map[string]bool, len(pipes))
 		for _, p := range pipes {
+			activeIDs[p.ID] = true
 			if p.Schedule == "" || p.Status == pipeline.StatusRunning {
 				continue
 			}
@@ -158,6 +160,11 @@ func runScheduler(pipeMgr *pipeline.Manager, runMgr *runner.Manager, logger *slo
 			}
 			if _, err := runMgr.Start(p.ID, runTasks, p.WebhookURL, p.Name, resolveLoopCount(p.LoopCount)); err != nil {
 				logger.Error("scheduled pipeline start failed", "pipeline_id", p.ID, "error", err)
+			}
+		}
+		for id := range lastRun {
+			if !activeIDs[id] {
+				delete(lastRun, id)
 			}
 		}
 	}

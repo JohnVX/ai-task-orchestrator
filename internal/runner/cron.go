@@ -118,7 +118,7 @@ func fieldMatches(expr string, value, min, max int) bool {
 		if err != nil {
 			return false
 		}
-		if n != value {
+		if value < n {
 			return false
 		}
 		return (value-n)%step == 0

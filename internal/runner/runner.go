@@ -274,6 +274,9 @@ func (m *Manager) ContinueRun(pipelineID, runID string, tasks []RunTask, webhook
 	if err != nil {
 		return fmt.Errorf("cannot read run %q: %w", runID, err)
 	}
+	if len(oldInstances) > 0 && oldInstances[0].PipelineID != pipelineID {
+		return fmt.Errorf("run %q does not belong to pipeline %q", runID, pipelineID)
+	}
 
 	startIdx := 0
 	found := false
@@ -296,6 +299,8 @@ func (m *Manager) ContinueRun(pipelineID, runID string, tasks []RunTask, webhook
 		os.MkdirAll(filepath.Join(runDir, fmt.Sprintf("%s-%d", t.Name, i)), 0755)
 	}
 
+	remainingLoop := resolveRemainingLoop(runDir)
+
 	m.stateMu.Lock()
 	state, _ := m.readState()
 	if state.PID == 0 {
@@ -303,7 +308,7 @@ func (m *Manager) ContinueRun(pipelineID, runID string, tasks []RunTask, webhook
 	}
 	state.RunningPipelines = append(state.RunningPipelines, PipelineRunState{
 			Iteration:    1,
-			LoopTotal:    0,
+			LoopTotal:    remainingLoop,
 		PipelineID:   pipelineID,
 		CurrentTask:  tasks[startIdx].Name,
 		CurrentRunID: runID,
@@ -322,7 +327,6 @@ func (m *Manager) ContinueRun(pipelineID, runID string, tasks []RunTask, webhook
 	ctl := &runControl{stopCh: make(chan struct{})}
 	m.running[pipelineID] = ctl
 
-	remainingLoop := resolveRemainingLoop(runDir)
 	go m.runLoop(pipelineID, runID, runDir, tasks, ctl, webhookURL, pipelineName, startIdx, remainingLoop)
 
 	return nil
@@ -802,7 +806,7 @@ func (m *Manager) DeleteRun(runID string) error {
 		return fmt.Errorf("stat run dir: %w", err)
 	}
 
-	m.mu.Lock()
+	m.stateMu.Lock()
 	state, _ := m.readState()
 	active := false
 	for _, rp := range state.RunningPipelines {
@@ -811,7 +815,7 @@ func (m *Manager) DeleteRun(runID string) error {
 			break
 		}
 	}
-	m.mu.Unlock()
+	m.stateMu.Unlock()
 	if active {
 		return fmt.Errorf("cannot delete active run %q", runID)
 	}
@@ -884,7 +888,7 @@ func (m *Manager) sendWebhook(url, pipelineID, runID, pipelineName string) {
 
 	var instances []TaskInstance
 	for _, e := range entries {
-		if !e.IsDir() || !strings.Contains(e.Name(), "-") {
+		if !e.IsDir() || strings.HasPrefix(e.Name(), "task-data-") {
 			continue
 		}
 		metaPath := filepath.Join(runDir, e.Name(), "meta.json")

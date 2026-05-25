@@ -245,9 +245,14 @@ func (m *Manager) ReorderTasks(pipelineID string, indices []int) error {
 	if len(oldTasks) == 0 {
 		return fmt.Errorf("cannot reorder empty pipeline")
 	}
+	seen := make(map[int]bool, len(indices))
 	newTasks := make([]TaskRef, 0, len(indices))
 	for _, idx := range indices {
 		if idx >= 0 && idx < len(oldTasks) {
+			if seen[idx] {
+				return fmt.Errorf("duplicate index %d in reorder", idx)
+			}
+			seen[idx] = true
 			newTasks = append(newTasks, oldTasks[idx])
 		}
 	}
