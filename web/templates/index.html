@@ -29,7 +29,7 @@
         <input type="text" id="pipeline-name" placeholder="流水线名称">
         <input type="text" id="pipeline-schedule" placeholder="*/30 * * * *（可选，cron 定时表达式）">
         <input type="text" id="pipeline-webhook" placeholder="https://hooks.example.com/notify（可选，webhook URL）">
-        <input type="number" id="pipeline-loop" min="0" placeholder="循环执行次数（可选，0=永久，未填=不循环）">
+        <input type="text" id="pipeline-loop" placeholder="循环执行次数（可选，0=永久，未填=不循环）" style="width:100%;box-sizing:border-box">
         <button id="pipeline-create-btn">创建</button>
       </div>
       <ul id="pipeline-list"></ul>

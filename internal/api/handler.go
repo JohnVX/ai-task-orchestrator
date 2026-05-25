@@ -229,7 +229,7 @@ func (h *Handler) handleCreatePipeline(w http.ResponseWriter, r *http.Request) {
 		Name       string `json:"name"`
 		Schedule   string `json:"schedule"`
 		WebhookURL string `json:"webhook_url"`
-		LoopCount  *int   `json:"loop_count,omitempty"`
+		LoopCount         *int    `json:"loop_count,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Name == "" {
 		writeError(w, http.StatusBadRequest, "pipeline name required")
@@ -300,6 +300,7 @@ func (h *Handler) handleUpdatePipeline(w http.ResponseWriter, r *http.Request) {
 		Tasks             []string `json:"tasks"`
 		Schedule          string   `json:"schedule"`
 		WebhookURL        string   `json:"webhook_url"`
+		LoopCount         *int    `json:"loop_count,omitempty"`
 		TimeoutSeconds    *int     `json:"timeout_seconds,omitempty"`
 		OnTimeout         *string  `json:"on_timeout,omitempty"`
 		ContinueOnFailure *bool    `json:"continue_on_failure,omitempty"`
@@ -326,6 +327,8 @@ func (h *Handler) handleUpdatePipeline(w http.ResponseWriter, r *http.Request) {
 		err = h.Pipeline.SetSchedule(id, body.Schedule)
 	case "set_webhook":
 		err = h.Pipeline.SetWebhook(id, body.WebhookURL)
+		case "set_loop":
+			err = h.Pipeline.SetLoopCount(id, body.LoopCount)
 	case "set_task_config":
 		err = h.Pipeline.SetTaskConfig(id, body.TaskIndex, body.TimeoutSeconds, body.OnTimeout, body.ContinueOnFailure, body.RetryCount)
 	default:
