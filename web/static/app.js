@@ -55,6 +55,10 @@ let pollTimer = null;
 // --- init ---
 
 document.addEventListener('DOMContentLoaded', () => {
+	  document.getElementById('task-config-sec').addEventListener('input', function() {
+	    var v = parseInt(this.value, 10);
+	    document.getElementById('task-config-retry').disabled = (v === 0 || isNaN(v));
+	  });
   initTaskUpload();
   initTaskDetailButtons();
   initPipelineCreate();
@@ -127,6 +131,7 @@ function toggleTimeoutFields(enabled) {
   const panel = document.getElementById('task-detail');
   panel.querySelector('.task-detail-timeout-sec').disabled = !enabled;
   panel.querySelector('.task-detail-timeout-action').disabled = !enabled;
+	  panel.querySelector('.task-detail-retry-count').disabled = !enabled;
 }
 
 function initTaskDetailButtons() {
@@ -372,11 +377,7 @@ function renderPipelineTasks(pipeline, tasks, runningTask, runningTaskIdx, highl
     }
 
     li.addEventListener('click', () => {
-      if (pipeline.status === 'running') {
-        alert('流水线运行中，无法修改 task 配置');
-        return;
-      }
-      configureTask(t, idx);
+      configureTask(t, idx, pipeline.status === 'running');
     });
     ul.appendChild(li);
   });
@@ -388,7 +389,7 @@ function renderPipelineTasks(pipeline, tasks, runningTask, runningTaskIdx, highl
 let currentConfigTask = null;
 let currentConfigIndex = -1;
 
-function configureTask(task, idx) {
+function configureTask(task, idx, readOnly) {
   currentConfigTask = task;
   currentConfigIndex = idx;
   const meta = window.taskMetas ? window.taskMetas[task.name] : null;
@@ -411,7 +412,17 @@ function configureTask(task, idx) {
   document.getElementById('task-config-continue').value = effContinue ? 'true' : 'false';
 	  document.getElementById('task-config-retry').value = effRetry;
 
-  document.getElementById('task-config-modal').classList.add('open');
+	  const inputs = document.querySelectorAll('#task-config-modal input, #task-config-modal select');
+	  inputs.forEach(el => { el.disabled = false; });
+	  document.getElementById('task-config-confirm').disabled = false;
+	  document.getElementById('task-config-reset').disabled = false;
+	  document.getElementById('task-config-retry').disabled = (effSec === 0);
+	  if (readOnly) {
+	    inputs.forEach(el => { el.disabled = true; });
+	    document.getElementById('task-config-confirm').disabled = true;
+	    document.getElementById('task-config-reset').disabled = true;
+	  }
+	  document.getElementById('task-config-modal').classList.add('open');
 }
 
 function closeConfigModal() {
@@ -460,7 +471,7 @@ function confirmConfig() {
     timeout_seconds: secVal !== '' ? parseInt(secVal, 10) : null,
     on_timeout: actionVal || null,
     continue_on_failure: continueVal === 'true' ? true : (continueVal === 'false' ? false : null),
-	    retry_count: parseInt(document.getElementById('task-config-retry').value, 10) || null,
+	    retry_count: parseRetryCount(),
   }).then(() => refreshCanvas()).catch(e => alert('设置失败: ' + e.message));
 }
 
@@ -784,4 +795,11 @@ function startPolling() {
       renderRunHistory();
     }
   }, 3000);
+}
+
+function parseRetryCount() {
+  const v = document.getElementById('task-config-retry').value.trim();
+  if (v === '') return null;
+  const n = parseInt(v, 10);
+  return isNaN(n) || n < 0 ? null : n;
 }
