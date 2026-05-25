@@ -316,7 +316,7 @@ func (m *Manager) ContinueRun(pipelineID, runID string, tasks []RunTask, webhook
 	ctl := &runControl{stopCh: make(chan struct{})}
 	m.running[pipelineID] = ctl
 
-	go m.runLoop(pipelineID, runID, runDir, tasks, ctl, webhookURL, pipelineName, startIdx, 0)
+	go m.runLoop(pipelineID, runID, runDir, tasks, ctl, webhookURL, pipelineName, startIdx, 1)
 
 	return nil
 }
