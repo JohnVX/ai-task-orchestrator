@@ -280,6 +280,7 @@ async function refreshCanvas() {
     }
     let lastRunStatus = '';
     let highlightIdx = -1;
+    let taskTimings = {};
     try {
       const runs = await api.getRuns(currentPipelineId);
       if (runs.length > 0) {
@@ -289,17 +290,22 @@ async function refreshCanvas() {
           if (inst.status !== 'success' && inst.status !== 'pending') {
             highlightIdx = inst.index;
           }
+          taskTimings[inst.index] = {
+            startedAt: inst.started_at,
+            endedAt: inst.ended_at,
+            status: inst.status,
+          };
         });
       }
     } catch (e) { /* ignore */ }
-    renderPipelineTasks(data.pipeline, data.tasks, runningTask, runningTaskIdx, highlightIdx, lastRunStatus, (state && state.running_pipelines ? (state.running_pipelines.find(p => p.pipeline_id === currentPipelineId) || {}).iteration || 0 : 0), (state && state.running_pipelines ? (state.running_pipelines.find(p => p.pipeline_id === currentPipelineId) || {}).loop_total || 0 : 0));
+    renderPipelineTasks(data.pipeline, data.tasks, runningTask, runningTaskIdx, highlightIdx, lastRunStatus, taskTimings, (state && state.running_pipelines ? (state.running_pipelines.find(p => p.pipeline_id === currentPipelineId) || {}).iteration || 0 : 0), (state && state.running_pipelines ? (state.running_pipelines.find(p => p.pipeline_id === currentPipelineId) || {}).loop_total || 0 : 0));
     updateRunButtons(data.pipeline, lastRunStatus);
   } catch (e) {
     document.getElementById('pipeline-task-list').innerHTML = '<li>加载失败</li>';
   }
 }
 
-function renderPipelineTasks(pipeline, tasks, runningTask, runningTaskIdx, highlightIdx, lastRunStatus, runningIter, runningLoopTotal) {
+function renderPipelineTasks(pipeline, tasks, runningTask, runningTaskIdx, highlightIdx, lastRunStatus, taskTimings, runningIter, runningLoopTotal) {
   const ul = document.getElementById('pipeline-task-list');
   ul.innerHTML = '';
   // Show schedule info
@@ -403,6 +409,26 @@ function renderPipelineTasks(pipeline, tasks, runningTask, runningTaskIdx, highl
 
     li.dataset.taskName = t.name;
     li.dataset.taskIndex = idx;
+
+    // Task duration display
+    const timing = taskTimings && taskTimings[idx];
+    if (timing && timing.startedAt) {
+      const durSpan = document.createElement('span');
+      durSpan.className = 'task-duration';
+      const start = new Date(timing.startedAt + 'Z').getTime();
+      if (timing.endedAt) {
+        const end = new Date(timing.endedAt + 'Z').getTime();
+        durSpan.textContent = ' ' + formatDuration((end - start) / 1000);
+        durSpan.style.color = '#888';
+      } else if (runningTask && t.name === runningTask && idx === runningTaskIdx) {
+        durSpan.textContent = ' ' + formatDuration((Date.now() - start) / 1000);
+        durSpan.style.color = '#1a73e8';
+        durSpan.dataset.startMs = start;
+        durSpan.classList.add('running-duration');
+      }
+      li.appendChild(durSpan);
+    }
+
     if (runningTask && t.name === runningTask && idx === runningTaskIdx) li.classList.add('running');
     if (idx === highlightIdx && lastRunStatus !== 'success' && pipeline.status !== 'running') {
       li.classList.add('task-failed');
@@ -827,6 +853,26 @@ function escHtml(s) {
 }
 
 // --- polling ---
+
+function formatDuration(totalSec) {
+  totalSec = Math.max(0, Math.round(totalSec));
+  if (totalSec < 60) return totalSec + 's';
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  if (m < 60) return m + 'm' + (s > 0 ? s + 's' : '');
+  const h = Math.floor(m / 60);
+  return h + 'h' + (m % 60) + 'm';
+}
+
+function updateRunningDuration() {
+  document.querySelectorAll('.running-duration').forEach(el => {
+    const start = parseInt(el.dataset.startMs, 10);
+    if (start) {
+      el.textContent = ' ' + formatDuration((Date.now() - start) / 1000);
+    }
+  });
+}
+setInterval(updateRunningDuration, 5000);
 
 function startPolling() {
   if (pollTimer) clearInterval(pollTimer);
