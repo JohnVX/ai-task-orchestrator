@@ -110,8 +110,13 @@ async function showTaskDetail(name) {
 
     const panel = document.getElementById('task-detail');
     panel.querySelector('.task-detail-name').textContent = meta.name;
-    panel.querySelector('.task-detail-run-cmd').value = meta.run_command || '';
-    panel.querySelector('.task-detail-stop-cmd').value = meta.stop_command || '';
+    const runCmdInput = panel.querySelector('.task-detail-run-cmd');
+    const stopCmdInput = panel.querySelector('.task-detail-stop-cmd');
+    const isLLM = meta.type === 'llm-prompt';
+    runCmdInput.value = isLLM ? '（LLM Agent 接管，不适用）' : (meta.run_command || '');
+    runCmdInput.disabled = isLLM;
+    stopCmdInput.value = isLLM ? '（LLM Agent 接管，不适用）' : (meta.stop_command || '');
+    stopCmdInput.disabled = isLLM;
     panel.querySelector('.task-detail-readme').textContent = readme;
 
     const timeoutEnable = panel.querySelector('.task-detail-timeout-enable');

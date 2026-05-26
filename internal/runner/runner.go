@@ -499,7 +499,6 @@ func (m *Manager) runLoop(pipelineID, runID, runDir string, tasks []RunTask, ctl
 					cmd = exec.Command("sh", "-c", meta.RunCommand)
 					cmd.Dir = filepath.Join(m.dataDir, meta.PackagePath)
 				}
-				cmd.Dir = filepath.Join(m.dataDir, meta.PackagePath)
 				cmd.Env = append(os.Environ(),
 					"TASK_DATA_READ="+filepath.Join(runDir, readBuf),
 					"TASK_DATA_WRITE="+filepath.Join(runDir, writeBuf),

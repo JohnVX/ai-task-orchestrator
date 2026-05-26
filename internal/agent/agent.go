@@ -4,6 +4,7 @@ package agent
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 )
 
@@ -54,7 +55,13 @@ func (a *claudeCodeAgent) BuildCommand(promptFile, workDir string) (*exec.Cmd, e
 	if _, err := exec.LookPath("claude"); err != nil {
 		return nil, fmt.Errorf("claude not found in PATH: %w", err)
 	}
-	cmd := exec.Command("claude", "-p", promptFile)
+	content, err := os.ReadFile(promptFile)
+	if err != nil {
+		return nil, fmt.Errorf("read prompt file: %w", err)
+	}
+	// Prepend directive to ensure Claude executes immediately rather than asking questions.
+	prefix := "请立即执行以下任务，用 shell 命令直接完成，不要提问，做完就退出。\n\n"
+	cmd := exec.Command("claude", "-p", prefix+string(content))
 	cmd.Dir = workDir
 	return cmd, nil
 }
