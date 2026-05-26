@@ -25,6 +25,7 @@ type TaskRef struct {
 	OnTimeout         *string `json:"on_timeout,omitempty"`         // nil=inherit
 	ContinueOnFailure *bool   `json:"continue_on_failure,omitempty"` // nil=inherit
 	RetryCount        *int    `json:"retry_count,omitempty"`         // nil=inherit
+	Stage             string  `json:"stage,omitempty"`
 }
 
 // Pipeline represents a named, ordered sequence of tasks.
@@ -342,6 +343,35 @@ func (m *Manager) SetTaskConfig(pipelineID string, taskIndex int, timeoutSeconds
 	p.Tasks[taskIndex].OnTimeout = onTimeout
 	p.Tasks[taskIndex].ContinueOnFailure = continueOnFailure
 	p.Tasks[taskIndex].RetryCount = retryCount
+	return m.writePipeline(p)
+}
+
+// SetTaskStage sets the stage name for a task in the pipeline.
+func (m *Manager) SetTaskStage(pipelineID string, taskIndex int, stage string) error {
+	p, err := m.readPipeline(pipelineID)
+	if err != nil {
+		return err
+	}
+	if p.Status == StatusRunning {
+		return fmt.Errorf("cannot modify pipeline while running")
+	}
+	if taskIndex < 0 || taskIndex >= len(p.Tasks) {
+		return fmt.Errorf("invalid task index %d", taskIndex)
+	}
+	p.Tasks[taskIndex].Stage = stage
+	return m.writePipeline(p)
+}
+
+// SetTasks replaces the entire task list for a pipeline. Used for reorder + stage changes.
+func (m *Manager) SetTasks(pipelineID string, tasks []TaskRef) error {
+	p, err := m.readPipeline(pipelineID)
+	if err != nil {
+		return err
+	}
+	if p.Status == StatusRunning {
+		return fmt.Errorf("cannot modify pipeline while running")
+	}
+	p.Tasks = tasks
 	return m.writePipeline(p)
 }
 

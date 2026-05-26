@@ -2055,3 +2055,375 @@ func TestFullLifecycleStateTransitions(t *testing.T) {
 		}
 	}
 }
+
+func TestSetTaskStage(t *testing.T) {
+	h := newTestHandler(t)
+	createTestTask(t, h, "stage-task-a", "#!/bin/sh\necho a\n")
+	createTestTask(t, h, "stage-task-b", "#!/bin/sh\necho b\n")
+	p := createTestPipeline(t, h, "stage-api-pipe")
+	mustAddTask(t, h, p.ID, "stage-task-a")
+	mustAddTask(t, h, p.ID, "stage-task-b")
+
+	// Set stage
+	resp := doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
+		"action":     "set_task_stage",
+		"task_index": 0,
+		"stage":      "build",
+	})
+	mustStatus(t, resp, 200)
+
+	// Verify stage was set
+	resp2 := doRequest(t, h, "GET", "/api/pipelines/"+p.ID, nil)
+	mustStatus(t, resp2, 200)
+	pp := decodeJSON[pipeline.Pipeline](t, resp2)
+	if len(pp.Tasks) != 2 {
+		t.Fatalf("expected 2 tasks, got %d", len(pp.Tasks))
+	}
+	if pp.Tasks[0].Stage != "build" {
+		t.Fatalf("expected stage 'build', got %q", pp.Tasks[0].Stage)
+	}
+	if pp.Tasks[1].Stage != "" {
+		t.Fatalf("expected empty stage, got %q", pp.Tasks[1].Stage)
+	}
+
+	// Clear stage
+	resp3 := doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
+		"action":     "set_task_stage",
+		"task_index": 0,
+		"stage":      "",
+	})
+	mustStatus(t, resp3, 200)
+
+	pp2 := decodeJSON[pipeline.Pipeline](t, doRequest(t, h, "GET", "/api/pipelines/"+p.ID, nil))
+	if pp2.Tasks[0].Stage != "" {
+		t.Fatalf("stage should be empty after clearing")
+	}
+
+	// Invalid index
+	resp4 := doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
+		"action":     "set_task_stage",
+		"task_index": 99,
+		"stage":      "x",
+	})
+	mustStatus(t, resp4, 400)
+}
+
+func TestParallelStageExecution(t *testing.T) {
+	h := newTestHandler(t)
+	createTestTask(t, h, "par-a", "#!/bin/sh\nsleep 0.3\necho a-done\n")
+	createTestTask(t, h, "par-b", "#!/bin/sh\nsleep 0.3\necho b-done\n")
+	createTestTask(t, h, "par-c", "#!/bin/sh\necho c-done\n")
+
+	p := createTestPipeline(t, h, "par-pipe")
+	mustAddTask(t, h, p.ID, "par-a")
+	mustAddTask(t, h, p.ID, "par-b")
+	mustAddTask(t, h, p.ID, "par-c")
+
+	// Set stage "build" for first two tasks
+	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
+		"action": "set_task_stage", "task_index": 0, "stage": "build",
+	})
+	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
+		"action": "set_task_stage", "task_index": 1, "stage": "build",
+	})
+
+	_, instances := startAndWait(t, h, p.ID, 15*time.Second)
+	if len(instances) != 3 {
+		t.Fatalf("expected 3 instances, got %d", len(instances))
+	}
+	for _, inst := range instances {
+		if inst.Status != "success" {
+			t.Fatalf("task %s: expected success, got %s", inst.TaskName, inst.Status)
+		}
+	}
+	// Stage "build" tasks (index 0, 1) should overlap in time (concurrent)
+	aStart := instances[0].StartedAt
+	aEnd := instances[0].EndedAt
+	bStart := instances[1].StartedAt
+	if aStart == nil || bStart == nil || aEnd == nil {
+		t.Fatal("timestamps missing")
+	}
+	// b starts before a ends → concurrent
+	if !bStart.Before(*aEnd) {
+		t.Fatal("stage tasks should overlap in time (concurrent)")
+	}
+	// Stage-2 task (index 2) starts after stage 1 tasks end
+	cStart := instances[2].StartedAt
+	if cStart == nil {
+		t.Fatal("c timestamp missing")
+	}
+	if !cStart.After(*aEnd) && !cStart.Equal(*aEnd) {
+		t.Fatal("stage 2 should start after stage 1 tasks ended")
+	}
+}
+
+func TestStageContinueOnFailure(t *testing.T) {
+	h := newTestHandler(t)
+	createTestTask(t, h, "scf-a", "#!/bin/sh\necho a\n")
+	createTestTask(t, h, "scf-b", "#!/bin/sh\nexit 1\n")
+	createTestTask(t, h, "scf-c", "#!/bin/sh\necho c\n")
+
+	p := createTestPipeline(t, h, "scf-pipe")
+	mustAddTask(t, h, p.ID, "scf-a")
+	mustAddTask(t, h, p.ID, "scf-b")
+	mustAddTask(t, h, p.ID, "scf-c")
+
+	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
+		"action": "set_task_stage", "task_index": 0, "stage": "build",
+	})
+	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
+		"action": "set_task_stage", "task_index": 1, "stage": "build",
+	})
+	// Set continue_on_failure for scf-b
+	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
+		"action": "set_task_config", "task_index": 1,
+		"continue_on_failure": true,
+	})
+
+	_, instances := startAndWait(t, h, p.ID, 15*time.Second)
+	if len(instances) != 3 {
+		t.Fatalf("expected 3 instances, got %d", len(instances))
+	}
+	if instances[0].Status != "success" {
+		t.Fatalf("scf-a: expected success, got %s", instances[0].Status)
+	}
+	if instances[1].Status != "failed" {
+		t.Fatalf("scf-b: expected failed, got %s", instances[1].Status)
+	}
+	if instances[2].Status != "success" {
+		t.Fatalf("scf-c: expected success (pipeline continued), got %s", instances[2].Status)
+	}
+}
+
+func TestStageStopOnFailure(t *testing.T) {
+	h := newTestHandler(t)
+	createTestTask(t, h, "ssf-a", "#!/bin/sh\necho a\n")
+	createTestTask(t, h, "ssf-b", "#!/bin/sh\nexit 1\n")
+	createTestTask(t, h, "ssf-c", "#!/bin/sh\necho c\n")
+
+	p := createTestPipeline(t, h, "ssf-pipe")
+	mustAddTask(t, h, p.ID, "ssf-a")
+	mustAddTask(t, h, p.ID, "ssf-b")
+	mustAddTask(t, h, p.ID, "ssf-c")
+
+	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
+		"action": "set_task_stage", "task_index": 0, "stage": "build",
+	})
+	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
+		"action": "set_task_stage", "task_index": 1, "stage": "build",
+	})
+	// NO continue_on_failure → pipeline stops
+
+	_, instances := startAndWait(t, h, p.ID, 15*time.Second)
+	// Only 2 tasks got meta.json (3rd never ran because pipeline stopped)
+	if len(instances) != 2 {
+		t.Fatalf("expected 2 instances (3rd task never ran), got %d", len(instances))
+	}
+	if instances[0].Status != "success" {
+		t.Fatalf("ssf-a: expected success, got %s", instances[0].Status)
+	}
+	if instances[1].Status != "failed" {
+		t.Fatalf("ssf-b: expected failed, got %s", instances[1].Status)
+	}
+}
+
+func TestStageNoStageFieldBackwardCompat(t *testing.T) {
+	h := newTestHandler(t)
+	createTestTask(t, h, "bw-a", "#!/bin/sh\necho a\n")
+	createTestTask(t, h, "bw-b", "#!/bin/sh\necho b\n")
+	createTestTask(t, h, "bw-c", "#!/bin/sh\necho c\n")
+
+	p := createTestPipeline(t, h, "bw-pipe")
+	mustAddTask(t, h, p.ID, "bw-a")
+	mustAddTask(t, h, p.ID, "bw-b")
+	mustAddTask(t, h, p.ID, "bw-c")
+	// No stages set — should run sequentially
+
+	_, instances := startAndWait(t, h, p.ID, 15*time.Second)
+	if len(instances) != 3 {
+		t.Fatalf("expected 3 instances, got %d", len(instances))
+	}
+	for _, inst := range instances {
+		if inst.Status != "success" {
+			t.Fatalf("task %s: expected success, got %s", inst.TaskName, inst.Status)
+		}
+	}
+	// Verify sequential: each task starts after the previous ended
+	if instances[1].StartedAt != nil && instances[0].EndedAt != nil {
+		if instances[1].StartedAt.Before(*instances[0].EndedAt) {
+			t.Fatal("sequential tasks should not overlap (no stage = standalone)")
+		}
+	}
+}
+
+func TestStopDuringParallelStage(t *testing.T) {
+	h := newTestHandler(t)
+	createTestTask(t, h, "stop-a", "#!/bin/sh\nsleep 30\necho a\n")
+	createTestTask(t, h, "stop-b", "#!/bin/sh\nsleep 30\necho b\n")
+
+	p := createTestPipeline(t, h, "stop-pipe")
+	mustAddTask(t, h, p.ID, "stop-a")
+	mustAddTask(t, h, p.ID, "stop-b")
+
+	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
+		"action": "set_task_stage", "task_index": 0, "stage": "stop-stage",
+	})
+	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
+		"action": "set_task_stage", "task_index": 1, "stage": "stop-stage",
+	})
+
+	resp := doRequest(t, h, "POST", "/api/pipelines/"+p.ID+"/start", nil)
+	mustStatus(t, resp, 200)
+	runID := decodeMap(t, resp)["run_id"].(string)
+
+	// Wait for tasks to start
+	time.Sleep(500 * time.Millisecond)
+
+	// Stop
+	resp2 := doRequest(t, h, "POST", "/api/pipelines/"+p.ID+"/stop", nil)
+	mustStatus(t, resp2, 200)
+
+	// Wait for pipeline to stop
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		s := decodeJSON[runner.OrchestratorState](t, doRequest(t, h, "GET", "/api/state", nil))
+		stillRunning := false
+		for _, rp := range s.RunningPipelines {
+			if rp.PipelineID == p.ID {
+				stillRunning = true
+				break
+			}
+		}
+		if !stillRunning {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	// Verify both tasks stopped
+	instances := decodeJSON[[]runner.TaskInstance](t, doRequest(t, h, "GET", "/api/runs/"+runID, nil))
+	if len(instances) != 2 {
+		t.Fatalf("expected 2 instances, got %d", len(instances))
+	}
+	for _, inst := range instances {
+		if inst.Status != "stopped" && inst.Status != "pending" && inst.Status != "success" {
+			t.Fatalf("task %s: expected stopped/pending/success, got %s", inst.TaskName, inst.Status)
+		}
+	}
+}
+
+func TestContinueRunPartialStage(t *testing.T) {
+	h := newTestHandler(t)
+	createTestTask(t, h, "cr-a", "#!/bin/sh\necho a\n")
+	createTestTask(t, h, "cr-b", "#!/bin/sh\nexit 1\n")
+
+	p := createTestPipeline(t, h, "cr-pipe")
+	mustAddTask(t, h, p.ID, "cr-a")
+	mustAddTask(t, h, p.ID, "cr-b")
+
+	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
+		"action": "set_task_stage", "task_index": 0, "stage": "deploy",
+	})
+	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
+		"action": "set_task_stage", "task_index": 1, "stage": "deploy",
+	})
+	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
+		"action": "set_task_config", "task_index": 1,
+		"continue_on_failure": true,
+	})
+
+	runID, instances := startAndWait(t, h, p.ID, 15*time.Second)
+	_ = runID
+	if instances[0].Status != "success" {
+		t.Fatalf("cr-a: expected success, got %s", instances[0].Status)
+	}
+	if instances[1].Status != "failed" {
+		t.Fatalf("cr-b: expected failed, got %s", instances[1].Status)
+	}
+
+	// ContinueRun: only cr-b should re-run
+	resp := doRequest(t, h, "POST", "/api/runs/"+runID+"/continue", map[string]interface{}{
+		"pipeline_id": p.ID,
+	})
+	mustStatus(t, resp, 200)
+
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		s := decodeJSON[runner.OrchestratorState](t, doRequest(t, h, "GET", "/api/state", nil))
+		stillRunning := false
+		for _, rp := range s.RunningPipelines {
+			if rp.PipelineID == p.ID {
+				stillRunning = true
+				break
+			}
+		}
+		if !stillRunning {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	// cr-a should still be success (not re-run), cr-b was re-run
+	newInstances := decodeJSON[[]runner.TaskInstance](t, doRequest(t, h, "GET", "/api/runs/"+runID, nil))
+	if len(newInstances) < 2 {
+		t.Fatalf("expected at least 2 instances, got %d", len(newInstances))
+	}
+	if newInstances[0].Status != "success" {
+		t.Fatalf("cr-a should remain success, got %s", newInstances[0].Status)
+	}
+	// cr-b re-run: ended_at should be different from original
+	if newInstances[1].EndedAt == nil || instances[1].EndedAt == nil {
+		t.Fatal("timestamps missing")
+	}
+	if !newInstances[1].EndedAt.After(*instances[1].EndedAt) {
+		t.Fatal("cr-b should have been re-run (newer ended_at)")
+	}
+}
+
+
+func TestLoopWithStages(t *testing.T) {
+	h := newTestHandler(t)
+	createTestTask(t, h, "loop-a", "#!/bin/sh\necho loop\n")
+	createTestTask(t, h, "loop-b", "#!/bin/sh\necho loop\n")
+
+	p := createTestPipeline(t, h, "loop-pipe")
+	mustAddTask(t, h, p.ID, "loop-a")
+	mustAddTask(t, h, p.ID, "loop-b")
+	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
+		"action": "set_task_stage", "task_index": 0, "stage": "s",
+	})
+	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
+		"action": "set_task_stage", "task_index": 1, "stage": "s",
+	})
+	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
+		"action": "set_loop", "loop_count": 2,
+	})
+
+	// Start and wait for 2 iterations
+	resp := doRequest(t, h, "POST", "/api/pipelines/"+p.ID+"/start", nil)
+	mustStatus(t, resp, 200)
+
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		s := decodeJSON[runner.OrchestratorState](t, doRequest(t, h, "GET", "/api/state", nil))
+		stillRunning := false
+		for _, rp := range s.RunningPipelines {
+			if rp.PipelineID == p.ID {
+				stillRunning = true
+				break
+			}
+		}
+		if !stillRunning {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	// Should have 2 runs
+	runsResp := doRequest(t, h, "GET", "/api/runs?pipeline_id="+p.ID, nil)
+	mustStatus(t, runsResp, 200)
+	runs := decodeJSON[[]map[string]interface{}](t, runsResp)
+	if len(runs) < 2 {
+		t.Fatalf("expected at least 2 runs for loop, got %d", len(runs))
+	}
+}

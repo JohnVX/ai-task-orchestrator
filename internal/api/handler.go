@@ -274,6 +274,7 @@ func (h *Handler) handleGetPipeline(w http.ResponseWriter, r *http.Request) {
 		OnTimeout         *string `json:"on_timeout,omitempty"`
 		ContinueOnFailure *bool   `json:"continue_on_failure,omitempty"`
 		RetryCount        *int    `json:"retry_count,omitempty"`
+		Stage             string            `json:"stage,omitempty"`
 	}
 	tasks := make([]taskInfo, 0, len(p.Tasks))
 	for _, ref := range p.Tasks {
@@ -283,6 +284,7 @@ func (h *Handler) handleGetPipeline(w http.ResponseWriter, r *http.Request) {
 			OnTimeout:         ref.OnTimeout,
 			ContinueOnFailure: ref.ContinueOnFailure,
 			RetryCount:        ref.RetryCount,
+				Stage:             ref.Stage,
 		}
 		if meta, err := h.Task.Get(ref.Name); err == nil {
 			info.Type = meta.Type
@@ -315,6 +317,8 @@ func (h *Handler) handleUpdatePipeline(w http.ResponseWriter, r *http.Request) {
 		OnTimeout         *string  `json:"on_timeout,omitempty"`
 		ContinueOnFailure *bool    `json:"continue_on_failure,omitempty"`
 		RetryCount        *int     `json:"retry_count,omitempty"`
+		Stage             string  `json:"stage,omitempty"`
+		TaskRefs          []pipeline.TaskRef `json:"task_refs"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		h.writeError(w, http.StatusBadRequest, "invalid JSON")
@@ -341,6 +345,10 @@ func (h *Handler) handleUpdatePipeline(w http.ResponseWriter, r *http.Request) {
 		err = h.Pipeline.SetLoopCount(id, body.LoopCount)
 	case "set_task_config":
 		err = h.Pipeline.SetTaskConfig(id, body.TaskIndex, body.TimeoutSeconds, body.OnTimeout, body.ContinueOnFailure, body.RetryCount)
+		case "set_task_stage":
+			err = h.Pipeline.SetTaskStage(id, body.TaskIndex, body.Stage)
+		case "set_tasks":
+			err = h.Pipeline.SetTasks(id, body.TaskRefs)
 	default:
 		h.writeError(w, http.StatusBadRequest, "unknown action: "+body.Action)
 		return
@@ -387,6 +395,7 @@ func (h *Handler) handleStartPipeline(w http.ResponseWriter, r *http.Request) {
 			OnTimeout:         ref.OnTimeout,
 			ContinueOnFailure: ref.ContinueOnFailure,
 			RetryCount:        ref.RetryCount,
+				Stage:             ref.Stage,
 		}
 	}
 	runID, err := h.Runner.Start(id, runTasks, p.WebhookURL, p.Name, resolveLoopCount(p.LoopCount))
@@ -443,6 +452,7 @@ func (h *Handler) handleContinueRun(w http.ResponseWriter, r *http.Request) {
 			OnTimeout:         ref.OnTimeout,
 			ContinueOnFailure: ref.ContinueOnFailure,
 			RetryCount:        ref.RetryCount,
+				Stage:             ref.Stage,
 		}
 	}
 	if err := h.Runner.ContinueRun(body.PipelineID, runID, runTasks, p.WebhookURL, p.Name); err != nil {

@@ -174,6 +174,7 @@ func runScheduler(pipeMgr *pipeline.Manager, runMgr *runner.Manager, logger *slo
 					OnTimeout:         ref.OnTimeout,
 					ContinueOnFailure: ref.ContinueOnFailure,
 					RetryCount:        ref.RetryCount,
+					Stage:             ref.Stage,
 				}
 			}
 			if _, err := runMgr.Start(p.ID, runTasks, p.WebhookURL, p.Name, resolveLoopCount(p.LoopCount)); err != nil {

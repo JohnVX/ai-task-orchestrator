@@ -899,3 +899,98 @@ func TestProcessStartTimeNegativePID(t *testing.T) {
 		t.Fatalf("processStartTime should return 0 for negative PID, got %d", v)
 	}
 }
+
+func TestComputeStages(t *testing.T) {
+	tests := []struct {
+		name  string
+		tasks []RunTask
+		want  [][]int // expected grouping: each inner slice = indices in a stage
+	}{
+		{
+			name:  "all empty",
+			tasks: []RunTask{{Name: "A"}, {Name: "B"}, {Name: "C"}},
+			want:  [][]int{{0}, {1}, {2}},
+		},
+		{
+			name: "two task stage",
+			tasks: []RunTask{
+				{Name: "A", Stage: "build"},
+				{Name: "B", Stage: "build"},
+			},
+			want: [][]int{{0, 1}},
+		},
+		{
+			name: "mixed with empties",
+			tasks: []RunTask{
+				{Name: "A"},
+				{Name: "B", Stage: "build"},
+				{Name: "C", Stage: "build"},
+				{Name: "D"},
+			},
+			want: [][]int{{0}, {1, 2}, {3}},
+		},
+		{
+			name: "single named stage",
+			tasks: []RunTask{
+				{Name: "A", Stage: "solo"},
+				{Name: "B"},
+			},
+			want: [][]int{{0}, {1}},
+		},
+		{
+			name: "non-adjacent same name",
+			tasks: []RunTask{
+				{Name: "A", Stage: "x"},
+				{Name: "B"},
+				{Name: "C", Stage: "x"},
+			},
+			want: [][]int{{0}, {1}, {2}},
+		},
+		{
+			name: "three stages",
+			tasks: []RunTask{
+				{Name: "A", Stage: "s1"},
+				{Name: "B", Stage: "s1"},
+				{Name: "C", Stage: "s2"},
+				{Name: "D", Stage: "s2"},
+			},
+			want: [][]int{{0, 1}, {2, 3}},
+		},
+		{
+			name:  "single task",
+			tasks: []RunTask{{Name: "only"}},
+			want:  [][]int{{0}},
+		},
+		{
+			name: "all same stage",
+			tasks: []RunTask{
+				{Name: "A", Stage: "x"},
+				{Name: "B", Stage: "x"},
+				{Name: "C", Stage: "x"},
+			},
+			want: [][]int{{0, 1, 2}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stages := computeStages(tt.tasks)
+			if len(stages) != len(tt.want) {
+				t.Fatalf("expected %d stages, got %d", len(tt.want), len(stages))
+			}
+			for si, wantIndices := range tt.want {
+				got := make([]int, len(stages[si].tasks))
+				for ti, st := range stages[si].tasks {
+					got[ti] = st.index
+				}
+				if len(got) != len(wantIndices) {
+					t.Fatalf("stage %d: expected %d tasks, got %d", si, len(wantIndices), len(got))
+				}
+				for i := range got {
+					if got[i] != wantIndices[i] {
+						t.Fatalf("stage %d: expected indices %v, got %v", si, wantIndices, got)
+					}
+				}
+			}
+		})
+	}
+}

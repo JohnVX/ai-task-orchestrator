@@ -367,3 +367,75 @@ input[type="text"], input[type="file"] {
   background: #0d904f;
   color: #fff;
 }
+
+/* Stage visual grouping — adjacent same-stage tasks connected via border */
+#pipeline-task-list li.stage-start {
+  border-top: 2px solid #9c27b0;
+  margin-top: 6px;
+  padding-top: 6px;
+  position: relative;
+}
+#pipeline-task-list li.stage-start::before {
+  content: attr(data-stage-name);
+  position: absolute;
+  top: -11px;
+  left: 8px;
+  background: #fff;
+  padding: 0 6px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: #9c27b0;
+  line-height: 1.4;
+}
+#pipeline-task-list li.stage-continue {
+  border-left: 2px solid #9c27b0;
+  border-right: 2px solid #9c27b0;
+  margin-left: 2px;
+  margin-right: 2px;
+}
+#pipeline-task-list li.stage-end {
+  border-left: 2px solid #9c27b0;
+  border-right: 2px solid #9c27b0;
+  border-bottom: 2px solid #9c27b0;
+  margin-left: 2px;
+  margin-right: 2px;
+  border-radius: 0 0 4px 4px;
+}
+
+/* Stage edit icon on hover */
+.task-stage-edit {
+  display: none;
+  cursor: pointer;
+  font-size: 11px;
+  color: #999;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+#pipeline-task-list li:hover .task-stage-edit {
+  display: inline;
+}
+.task-stage-edit:hover {
+  color: #1a73e8;
+}
+
+/* Inline stage input */
+.stage-inline-input {
+  width: 70px;
+  font-size: 0.7rem;
+  padding: 1px 4px;
+  margin-left: 4px;
+  border: 1px solid #1a73e8;
+  border-radius: 3px;
+  vertical-align: middle;
+}
+
+/* Stage badge on tasks */
+.task-stage-badge {
+  font-size: 0.7rem;
+  background: #f3e5f5;
+  color: #7b1fa2;
+  padding: 0 4px;
+  border-radius: 3px;
+  margin-left: 4px;
+  vertical-align: middle;
+}

@@ -269,13 +269,13 @@ async function refreshCanvas() {
       api.getPipeline(currentPipelineId),
       api.getState(),
     ]);
-    let runningTask = null;
-    let runningTaskIdx = -1;
+    let runningTasks = [];
+    let runningStageIdx = -1;
     if (state && state.running_pipelines) {
       const rp = state.running_pipelines.find(p => p.pipeline_id === currentPipelineId);
       if (rp) {
-        runningTask = rp.current_task;
-        runningTaskIdx = rp.task_index;
+        runningTasks = (rp.current_task || '').split(',').filter(Boolean);
+        runningStageIdx = rp.task_index;
       }
     }
     let lastRunStatus = '';
@@ -305,7 +305,7 @@ async function refreshCanvas() {
   }
 }
 
-function renderPipelineTasks(pipeline, tasks, runningTask, runningTaskIdx, highlightIdx, lastRunStatus, taskTimings, runningIter, runningLoopTotal) {
+function renderPipelineTasks(pipeline, tasks, runningTasks, runningStageIdx, highlightIdx, lastRunStatus, taskTimings, runningIter, runningLoopTotal) {
   const ul = document.getElementById('pipeline-task-list');
   ul.innerHTML = '';
   // Show schedule info
@@ -410,6 +410,19 @@ function renderPipelineTasks(pipeline, tasks, runningTask, runningTaskIdx, highl
     li.dataset.taskName = t.name;
     li.dataset.taskIndex = idx;
 
+	    // Stage edit icon (hover-visible)
+	    if (!pipeline || pipeline.status !== 'running') {
+	      const editIcon = document.createElement('span');
+	      editIcon.className = 'task-stage-edit';
+	      editIcon.textContent = '\u270E';
+	      editIcon.title = 'Edit stage';
+	      editIcon.addEventListener('click', (e) => {
+	        e.stopPropagation();
+	        showStageInput(li, t, idx);
+	      });
+	      li.appendChild(editIcon);
+	    }
+
     // Task duration display
     const timing = taskTimings && taskTimings[idx];
     if (timing && timing.startedAt) {
@@ -420,7 +433,7 @@ function renderPipelineTasks(pipeline, tasks, runningTask, runningTaskIdx, highl
         const end = new Date(timing.endedAt).getTime();
         durSpan.textContent = ' ' + formatDuration((end - start) / 1000);
         durSpan.style.color = '#888';
-      } else if (runningTask && t.name === runningTask && idx === runningTaskIdx) {
+      } else if (runningTasks && runningStageIdx >= 0 && runningTasks.includes(t.name)) {
         durSpan.textContent = ' ' + formatDuration((Date.now() - start) / 1000);
         durSpan.style.color = '#1a73e8';
         durSpan.dataset.startMs = start;
@@ -429,7 +442,18 @@ function renderPipelineTasks(pipeline, tasks, runningTask, runningTaskIdx, highl
       li.appendChild(durSpan);
     }
 
-    if (runningTask && t.name === runningTask && idx === runningTaskIdx) li.classList.add('running');
+    if (runningTasks && runningTasks.length > 0 && runningStageIdx >= 0 && runningTasks.includes(t.name)) {
+	      // Check if current stage matches and task is in running list
+	      let stageIdx = 0;
+	      let seenStages = {};
+	      for (let si = 0; si < idx; si++) {
+	        const st = (tasks[si].stage || '');
+	        const prevSt = si > 0 ? (tasks[si-1].stage || '') : '';
+	        if (st && st !== prevSt && st !== '') stageIdx++;
+	        else if (!st && (!prevSt || prevSt === '')) stageIdx++;
+	      }
+	      if (stageIdx === runningStageIdx) li.classList.add('running');
+	    }
     if (idx === highlightIdx && lastRunStatus !== 'success' && pipeline.status !== 'running') {
       li.classList.add('task-failed');
     }
@@ -502,6 +526,35 @@ function configureTask(task, idx, readOnly) {
 	    document.getElementById('task-config-reset').disabled = true;
 	  }
 	  document.getElementById('task-config-modal').classList.add('open');
+}
+
+function showStageInput(li, task, idx) {
+  const existing = li.querySelector('.stage-inline-input');
+  if (existing) return;
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'stage-inline-input';
+  input.value = task.stage || '';
+  input.placeholder = 'stage';
+  input.addEventListener('keydown', async (e) => {
+    if (e.key === 'Enter') {
+      const val = input.value.trim();
+      try {
+        await api.request('PUT', '/api/pipelines/' + currentPipelineId, {
+          action: 'set_task_stage',
+          task_index: idx,
+          stage: val,
+        });
+        refreshCanvas();
+      } catch (err) { alert('Failed: ' + err.message); }
+      input.remove();
+    } else if (e.key === 'Escape') {
+      input.remove();
+    }
+  });
+  input.addEventListener('blur', () => { input.remove(); });
+  li.appendChild(input);
+  input.focus();
 }
 
 function closeConfigModal() {
@@ -610,9 +663,27 @@ function initPipelineSortable(running) {
     },
     onUpdate: async function(evt) {
       if (running) return;
-      const items = [...evt.from.querySelectorAll('li')].map(li => parseInt(li.dataset.taskIndex, 10));
+      const tasks = window._pipelineTasks || [];
+      const taskRefs = [];
+      evt.from.querySelectorAll('li').forEach(li => {
+        const idx = parseInt(li.dataset.taskIndex, 10);
+        if (idx >= 0 && idx < tasks.length) {
+          const t = tasks[idx];
+          taskRefs.push({
+            name: t.name,
+            stage: t.stage || '',
+            timeout_seconds: t.timeout_seconds,
+            on_timeout: t.on_timeout,
+            continue_on_failure: t.continue_on_failure,
+            retry_count: t.retry_count,
+          });
+        }
+      });
       try {
-        await api.reorderTasks(currentPipelineId, items);
+        await api.request('PUT', '/api/pipelines/' + currentPipelineId, {
+          action: 'set_tasks',
+          task_refs: taskRefs,
+        });
       } catch (e) { alert('排序失败: ' + e.message); }
     },
   });
