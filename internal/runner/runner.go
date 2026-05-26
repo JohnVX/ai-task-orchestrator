@@ -514,6 +514,14 @@ func (m *Manager) runLoop(pipelineID, runID, runDir string, tasks []RunTask, ctl
 				if cerr != nil {
 					m.logger.Warn("create stderr log", "error", cerr)
 				}
+					if meta.Type == task.TypeLLMPrompt {
+						promptFile := filepath.Join(m.dataDir, meta.PackagePath, "prompt.md")
+						if data, rerr := os.ReadFile(promptFile); rerr == nil {
+							stdoutF.WriteString("=== LLM Agent \u8f93\u5165 (prompt.md) ===\n")
+							stdoutF.Write(data)
+							stdoutF.WriteString("\n=== LLM Agent \u8f93\u51fa ===\n")
+						}
+					}
 				cmd.Stdout = stdoutF
 				cmd.Stderr = stderrF
 
