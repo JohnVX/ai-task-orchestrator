@@ -415,9 +415,9 @@ function renderPipelineTasks(pipeline, tasks, runningTask, runningTaskIdx, highl
     if (timing && timing.startedAt) {
       const durSpan = document.createElement('span');
       durSpan.className = 'task-duration';
-      const start = new Date(timing.startedAt + 'Z').getTime();
+      const start = new Date(timing.startedAt).getTime();
       if (timing.endedAt) {
-        const end = new Date(timing.endedAt + 'Z').getTime();
+        const end = new Date(timing.endedAt).getTime();
         durSpan.textContent = ' ' + formatDuration((end - start) / 1000);
         durSpan.style.color = '#888';
       } else if (runningTask && t.name === runningTask && idx === runningTaskIdx) {
