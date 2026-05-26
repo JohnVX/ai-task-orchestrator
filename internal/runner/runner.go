@@ -488,6 +488,11 @@ func (m *Manager) runLoop(pipelineID, runID, runDir string, tasks []RunTask, ctl
 				if meta.Type == task.TypeLLMPrompt {
 					workDir := filepath.Join(m.dataDir, meta.PackagePath)
 					promptFile := filepath.Join(workDir, "prompt.md")
+						if m.llmAgent == nil {
+							execErr = fmt.Errorf("llm agent not configured, cannot run llm-prompt task")
+							timedOut = false
+							break
+						}
 					c, cerr := m.llmAgent.BuildCommand(promptFile, workDir)
 					if cerr != nil {
 						execErr = cerr

@@ -2,12 +2,12 @@
 
 轻量级任务编排与运行管理平台。将任意可执行程序打包为 task，拖拽编排为 pipeline，串行执行并自动管理数据传递。
 
-**与 AI 解耦** — task 可以是任意可执行程序，平台不感知内部实现。**单二进制部署** — Go 编译，零运行时依赖。
+**单二进制部署** — Go 编译，零运行时依赖。**内置 LLM Agent** — `llm-prompt` 类型 task 由 Claude Code 直接执行。
 
 ## 设计原则
 
-- **与 AI/大模型解耦**：ai-task-orchestrator 是通用任务编排与进程管理平台，不感知 task 内部是否是 AI agent。task 可以是任意可执行程序（调用大模型 API 的脚本、数据处理程序、模型训练任务等）。
-- **舞台与演员分离**：ai-task-orchestrator 提供"舞台和调度"，task 是"演员"。舞台不需要知道演员在演什么。
+- **舞台与演员分离**：ai-task-orchestrator 提供"舞台和调度"，task 是"演员"。支持 `self-contained`（自包含可执行脚本）和 `llm-prompt`（LLM 提示词任务）两种 task 类型。
+- **Agent 可替换**：LLM Agent 通过接口抽象，`--llm-agent` 指定。找不到 agent 时仅警告，不影响 self-contained 任务正常运行。
 
 ## 快速开始
 

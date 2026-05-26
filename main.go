@@ -61,10 +61,11 @@ func main() {
 	taskMgr := task.NewManager(filepath.Join(absDataDir, "tasks"), filepath.Join(absDataDir, "task_meta"), filepath.Join(absDataDir, "pipelines"))
 	agt, err := agent.Get(*llmAgent)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "resolve llm agent %q: %v\n", *llmAgent, err)
-		os.Exit(1)
+		slogger.Warn("llm agent not available, llm-prompt tasks will fail at runtime", "agent", *llmAgent, "error", err)
+		agt = nil
+	} else {
+		slogger.Info("llm agent resolved", "agent", agt.Name())
 	}
-	slogger.Info("llm agent resolved", "agent", agt.Name())
 
 	runMgr := runner.NewManager(filepath.Join(absDataDir, "runs"), absDataDir, taskMgr, slogger, agt)
 	pipelineMgr := pipeline.NewManager(filepath.Join(absDataDir, "pipelines"), taskMgr, runMgr)
