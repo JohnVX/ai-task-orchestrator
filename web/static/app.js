@@ -298,7 +298,7 @@ async function refreshCanvas() {
         });
       }
     } catch (e) { /* ignore */ }
-    renderPipelineTasks(data.pipeline, data.tasks, runningTask, runningTaskIdx, highlightIdx, lastRunStatus, taskTimings, (state && state.running_pipelines ? (state.running_pipelines.find(p => p.pipeline_id === currentPipelineId) || {}).iteration || 0 : 0), (state && state.running_pipelines ? (state.running_pipelines.find(p => p.pipeline_id === currentPipelineId) || {}).loop_total || 0 : 0));
+    renderPipelineTasks(data.pipeline, data.tasks, runningTasks, runningStageIdx, highlightIdx, lastRunStatus, taskTimings, (state && state.running_pipelines ? (state.running_pipelines.find(p => p.pipeline_id === currentPipelineId) || {}).iteration || 0 : 0), (state && state.running_pipelines ? (state.running_pipelines.find(p => p.pipeline_id === currentPipelineId) || {}).loop_total || 0 : 0));
     updateRunButtons(data.pipeline, lastRunStatus);
   } catch (e) {
     document.getElementById('pipeline-task-list').innerHTML = '<li>加载失败</li>';
@@ -306,6 +306,7 @@ async function refreshCanvas() {
 }
 
 function renderPipelineTasks(pipeline, tasks, runningTasks, runningStageIdx, highlightIdx, lastRunStatus, taskTimings, runningIter, runningLoopTotal) {
+  window._pipelineTasks = tasks;
   const ul = document.getElementById('pipeline-task-list');
   ul.innerHTML = '';
   // Show schedule info

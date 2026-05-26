@@ -404,8 +404,9 @@ internal/
   runner/cron.go     — cron 表达式解析匹配
   logger/logger.go   — slog 日志初始化、文件轮转
   runner/cleanup.go  — 运行数据保留策略清理
-  api/handler_test.go    — HTTP API 功能测试（92 tests）
-  runner/runner_test.go  — 执行器测试（23 tests）
+  api/handler_test.go    — HTTP API 功能测试（106 tests）
+  api/contract_test.go   — 前后端 API 契约测试（15 tests）
+  runner/runner_test.go  — 执行器测试（24 tests）
   runner/cleanup_test.go — 清理策略测试（9 tests）
   pipeline/pipeline_test.go — Pipeline CRUD 测试（18 tests）
   task/task_test.go      — Task 描述符解析测试（4 tests）
@@ -419,12 +420,13 @@ web/
 ## 测试
 
 ```bash
-go test ./... -count=1   # 全部 155 个测试（~15s + ~105s 执行时间）
+go test ./... -count=1   # 全部 176 个测试（~15s + ~110s 执行时间）
 ```
 
 | 包 | 文件 | 测试数 | 覆盖内容 |
 |---|------|--------|----------|
-| `internal/api` | `handler_test.go` | 100 | HTTP API 功能测试，覆盖 task 生命周期（含 llm-prompt 上传验证）、pipeline 生命周期、流水线执行（成功/超时/跳过/失败继续/手动停止/续跑）、run 管理、状态管理、循环执行、数据清理、cron 验证、集成测试（重排执行、配置传播、状态转换） |
+| `internal/api` | `handler_test.go` | 106 | HTTP API 功能测试，覆盖 task 生命周期（含 llm-prompt 上传验证）、pipeline 生命周期、流水线执行（成功/超时/跳过/失败继续/手动停止/续跑/并行 stage）、run 管理、状态管理、循环执行、数据清理、cron 验证、stage 编排（set_tasks/set_task_stage/remove_task） |
+| `internal/api` | `contract_test.go` | 15 | 前后端 API 契约测试，验证 11 个 API 端点的响应结构（字段存在性与类型），防止后端改动导致前端 JS 运行时出错 |
 | `internal/runner` | `runner_test.go` | 24 | 执行器单元测试，task 元数据读写、run 信息、日志、超时重试、循环执行、PID 复用检测 |
 | `internal/runner` | `cleanup_test.go` | 9 | 运行数据清理：禁用/限制内/超出/多流水线/运行中跳过/混合状态/空目录 |
 | `internal/pipeline` | `pipeline_test.go` | 18 | Pipeline CRUD：重复 task、独立配置、索引移除、重排保留配置、边界情况、持久化、跨流水线隔离 |

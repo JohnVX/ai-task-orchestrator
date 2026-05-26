@@ -348,6 +348,12 @@ func (h *Handler) handleUpdatePipeline(w http.ResponseWriter, r *http.Request) {
 		case "set_task_stage":
 			err = h.Pipeline.SetTaskStage(id, body.TaskIndex, body.Stage)
 		case "set_tasks":
+			for _, ref := range body.TaskRefs {
+				if _, err := h.Task.Get(ref.Name); err != nil {
+					h.writeError(w, http.StatusBadRequest, "task not found: "+ref.Name)
+					return
+				}
+			}
 			err = h.Pipeline.SetTasks(id, body.TaskRefs)
 	default:
 		h.writeError(w, http.StatusBadRequest, "unknown action: "+body.Action)

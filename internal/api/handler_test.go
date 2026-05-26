@@ -2427,3 +2427,222 @@ func TestLoopWithStages(t *testing.T) {
 		t.Fatalf("expected at least 2 runs for loop, got %d", len(runs))
 	}
 }
+
+func TestSetTasksBasic(t *testing.T) {
+	h := newTestHandler(t)
+	createTestTask(t, h, "st-a", "#!/bin/sh\necho a\n")
+	createTestTask(t, h, "st-b", "#!/bin/sh\necho b\n")
+	createTestTask(t, h, "st-c", "#!/bin/sh\necho c\n")
+	p := createTestPipeline(t, h, "set-tasks-pipe")
+	mustAddTask(t, h, p.ID, "st-a")
+	mustAddTask(t, h, p.ID, "st-b")
+	mustAddTask(t, h, p.ID, "st-c")
+
+	pp := decodeJSON[pipeline.Pipeline](t, doRequest(t, h, "GET", "/api/pipelines/"+p.ID, nil))
+	if len(pp.Tasks) != 3 {
+		t.Fatalf("expected 3 tasks, got %d", len(pp.Tasks))
+	}
+
+	// Replace with reversed order
+	resp := doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
+		"action": "set_tasks",
+		"task_refs": []map[string]interface{}{
+			{"name": "st-c"},
+			{"name": "st-b"},
+			{"name": "st-a"},
+		},
+	})
+	mustStatus(t, resp, 200)
+
+	pp2 := decodeJSON[pipeline.Pipeline](t, doRequest(t, h, "GET", "/api/pipelines/"+p.ID, nil))
+	if len(pp2.Tasks) != 3 {
+		t.Fatalf("expected 3 tasks after set_tasks, got %d", len(pp2.Tasks))
+	}
+	if pp2.Tasks[0].Name != "st-c" {
+		t.Fatalf("expected st-c first, got %s", pp2.Tasks[0].Name)
+	}
+	if pp2.Tasks[1].Name != "st-b" {
+		t.Fatalf("expected st-b second, got %s", pp2.Tasks[1].Name)
+	}
+	if pp2.Tasks[2].Name != "st-a" {
+		t.Fatalf("expected st-a third, got %s", pp2.Tasks[2].Name)
+	}
+}
+
+func TestSetTasksPreservesStage(t *testing.T) {
+	h := newTestHandler(t)
+	createTestTask(t, h, "stg-x", "#!/bin/sh\necho x\n")
+	createTestTask(t, h, "stg-y", "#!/bin/sh\necho y\n")
+	p := createTestPipeline(t, h, "set-tasks-stage")
+	mustAddTask(t, h, p.ID, "stg-x")
+	mustAddTask(t, h, p.ID, "stg-y")
+
+	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
+		"action": "set_task_stage", "task_index": 0, "stage": "build",
+	})
+	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
+		"action": "set_task_stage", "task_index": 1, "stage": "deploy",
+	})
+
+	resp := doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
+		"action": "set_tasks",
+		"task_refs": []map[string]interface{}{
+			{"name": "stg-y", "stage": "deploy"},
+			{"name": "stg-x", "stage": "build"},
+		},
+	})
+	mustStatus(t, resp, 200)
+
+	pp := decodeJSON[pipeline.Pipeline](t, doRequest(t, h, "GET", "/api/pipelines/"+p.ID, nil))
+	if len(pp.Tasks) != 2 {
+		t.Fatalf("expected 2 tasks, got %d", len(pp.Tasks))
+	}
+	if pp.Tasks[0].Name != "stg-y" || pp.Tasks[0].Stage != "deploy" {
+		t.Fatalf("expected stg-y/deploy, got %s/%s", pp.Tasks[0].Name, pp.Tasks[0].Stage)
+	}
+	if pp.Tasks[1].Name != "stg-x" || pp.Tasks[1].Stage != "build" {
+		t.Fatalf("expected stg-x/build, got %s/%s", pp.Tasks[1].Name, pp.Tasks[1].Stage)
+	}
+}
+
+func TestSetTasksPreservesOverrides(t *testing.T) {
+	h := newTestHandler(t)
+	createTestTask(t, h, "ov-a", "#!/bin/sh\necho a\n")
+	p := createTestPipeline(t, h, "set-tasks-override")
+	mustAddTask(t, h, p.ID, "ov-a")
+
+	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
+		"action": "set_task_config", "task_index": 0,
+		"timeout_seconds": 30, "on_timeout": "skip",
+	})
+
+	resp := doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
+		"action": "set_tasks",
+		"task_refs": []map[string]interface{}{
+			{"name": "ov-a", "timeout_seconds": 60, "on_timeout": "fail", "stage": "verify"},
+		},
+	})
+	mustStatus(t, resp, 200)
+
+	pp := decodeJSON[pipeline.Pipeline](t, doRequest(t, h, "GET", "/api/pipelines/"+p.ID, nil))
+	if len(pp.Tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(pp.Tasks))
+	}
+	task := pp.Tasks[0]
+	if task.Stage != "verify" {
+		t.Fatalf("expected stage 'verify', got %q", task.Stage)
+	}
+	if task.TimeoutSeconds == nil || *task.TimeoutSeconds != 60 {
+		t.Fatalf("expected timeout_seconds=60, got %v", task.TimeoutSeconds)
+	}
+	if task.OnTimeout == nil || *task.OnTimeout != "fail" {
+		t.Fatalf("expected on_timeout='fail', got %v", task.OnTimeout)
+	}
+}
+
+func TestSetTasksRejectsNonexistentTask(t *testing.T) {
+	h := newTestHandler(t)
+	createTestTask(t, h, "real-task", "#!/bin/sh\necho ok\n")
+	p := createTestPipeline(t, h, "set-tasks-bad")
+	mustAddTask(t, h, p.ID, "real-task")
+
+	resp := doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
+		"action": "set_tasks",
+		"task_refs": []map[string]interface{}{
+			{"name": "nonexistent-task"},
+		},
+	})
+	mustStatus(t, resp, 400)
+}
+
+func TestRemoveTaskMaintainsRemainingStages(t *testing.T) {
+	h := newTestHandler(t)
+	createTestTask(t, h, "rm-a", "#!/bin/sh\necho a\n")
+	createTestTask(t, h, "rm-b", "#!/bin/sh\necho b\n")
+	createTestTask(t, h, "rm-c", "#!/bin/sh\necho c\n")
+	p := createTestPipeline(t, h, "remove-stage")
+	mustAddTask(t, h, p.ID, "rm-a")
+	mustAddTask(t, h, p.ID, "rm-b")
+	mustAddTask(t, h, p.ID, "rm-c")
+
+	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
+		"action": "set_task_stage", "task_index": 0, "stage": "init",
+	})
+	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
+		"action": "set_task_stage", "task_index": 1, "stage": "work",
+	})
+	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
+		"action": "set_task_stage", "task_index": 2, "stage": "work",
+	})
+
+	// Remove middle task (idx=1)
+	resp := doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
+		"action": "remove_task", "task_index": 1,
+	})
+	mustStatus(t, resp, 200)
+
+	pp := decodeJSON[pipeline.Pipeline](t, doRequest(t, h, "GET", "/api/pipelines/"+p.ID, nil))
+	if len(pp.Tasks) != 2 {
+		t.Fatalf("expected 2 tasks after removal, got %d", len(pp.Tasks))
+	}
+	if pp.Tasks[0].Name != "rm-a" || pp.Tasks[0].Stage != "init" {
+		t.Fatalf("expected rm-a/init, got %s/%s", pp.Tasks[0].Name, pp.Tasks[0].Stage)
+	}
+	if pp.Tasks[1].Name != "rm-c" || pp.Tasks[1].Stage != "work" {
+		t.Fatalf("expected rm-c/work, got %s/%s", pp.Tasks[1].Name, pp.Tasks[1].Stage)
+	}
+}
+
+func TestComputeStagesAfterReorder(t *testing.T) {
+	// Verify stage grouping after set_tasks reorder.
+	// Adjacent same-stage tasks should form a group; non-adjacent same-name stages should NOT merge.
+	h := newTestHandler(t)
+	createTestTask(t, h, "cr-a", "#!/bin/sh\necho a\n")
+	createTestTask(t, h, "cr-b", "#!/bin/sh\necho b\n")
+	createTestTask(t, h, "cr-c", "#!/bin/sh\necho c\n")
+	createTestTask(t, h, "cr-d", "#!/bin/sh\necho d\n")
+	p := createTestPipeline(t, h, "compute-reorder")
+	mustAddTask(t, h, p.ID, "cr-a")
+	mustAddTask(t, h, p.ID, "cr-b")
+	mustAddTask(t, h, p.ID, "cr-c")
+	mustAddTask(t, h, p.ID, "cr-d")
+
+	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
+		"action": "set_task_stage", "task_index": 0, "stage": "init",
+	})
+	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
+		"action": "set_task_stage", "task_index": 1, "stage": "build",
+	})
+	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
+		"action": "set_task_stage", "task_index": 2, "stage": "build",
+	})
+	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
+		"action": "set_task_stage", "task_index": 3, "stage": "deploy",
+	})
+
+	// Reorder: move cr-d between cr-a and cr-b, breaking "build" adjacency
+	// New order: cr-a(init), cr-d(deploy), cr-b(build), cr-c(build)
+	resp := doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
+		"action": "set_tasks",
+		"task_refs": []map[string]interface{}{
+			{"name": "cr-a", "stage": "init"},
+			{"name": "cr-d", "stage": "deploy"},
+			{"name": "cr-b", "stage": "build"},
+			{"name": "cr-c", "stage": "build"},
+		},
+	})
+	mustStatus(t, resp, 200)
+
+	pp := decodeJSON[pipeline.Pipeline](t, doRequest(t, h, "GET", "/api/pipelines/"+p.ID, nil))
+	if len(pp.Tasks) != 4 {
+		t.Fatalf("expected 4 tasks, got %d", len(pp.Tasks))
+	}
+	expected := []struct{ name, stage string }{
+		{"cr-a", "init"}, {"cr-d", "deploy"}, {"cr-b", "build"}, {"cr-c", "build"},
+	}
+	for i, exp := range expected {
+		if pp.Tasks[i].Name != exp.name || pp.Tasks[i].Stage != exp.stage {
+			t.Fatalf("idx %d: expected %s/%s, got %s/%s", i, exp.name, exp.stage, pp.Tasks[i].Name, pp.Tasks[i].Stage)
+		}
+	}
+}
