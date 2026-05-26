@@ -1489,3 +1489,333 @@ func TestRetryCountDefaults(t *testing.T) {
 		t.Fatalf("expected nil (inherit) retry_count override, got %v", t0["retry_count"])
 	}
 }
+
+// ===== Loop + ContinueRun Iteration Tests =====
+
+func TestLoopContinueRunPreservesIteration(t *testing.T) {
+	h := newTestHandler(t)
+	createTestTask(t, h, "loop-conts", "#!/bin/sh\nsleep 2\nexit 0\n")
+
+	resp := doRequest(t, h, "POST", "/api/pipelines", map[string]interface{}{
+		"name":       "loop-cont-pipe",
+		"loop_count": 3,
+	})
+	mustStatus(t, resp, 201)
+	p := decodeJSON[pipeline.Pipeline](t, resp)
+	mustAddTask(t, h, p.ID, "loop-conts")
+
+	// Start and wait just past iteration 1 (task takes ~2s)
+	doRequest(t, h, "POST", "/api/pipelines/"+p.ID+"/start", nil)
+	time.Sleep(2500 * time.Millisecond)
+
+	// Verify we're in iteration 2
+	stateResp := doRequest(t, h, "GET", "/api/state", nil)
+	mustStatus(t, stateResp, 200)
+	state := decodeJSON[runner.OrchestratorState](t, stateResp)
+	found := false
+	var iter, total int
+	for _, rp := range state.RunningPipelines {
+		if rp.PipelineID == p.ID {
+			iter = rp.Iteration
+			total = rp.LoopTotal
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("pipeline should be running")
+	}
+	if iter != 2 || total != 3 {
+		t.Fatalf("expected iteration=2 loop_total=3 during run, got iteration=%d loop_total=%d", iter, total)
+	}
+
+	// Stop pipeline
+	doRequest(t, h, "POST", "/api/pipelines/"+p.ID+"/stop", nil)
+	time.Sleep(500 * time.Millisecond)
+
+	// Get the last run ID
+	runsResp := doRequest(t, h, "GET", "/api/runs?pipeline_id="+p.ID, nil)
+	mustStatus(t, runsResp, 200)
+	runs := decodeJSON[[]map[string]interface{}](t, runsResp)
+	if len(runs) == 0 {
+		t.Fatal("expected at least 1 run")
+	}
+	lastRunID := runs[0]["run_id"].(string)
+
+	// ContinueRun — should preserve iteration position
+	resp = doRequest(t, h, "POST", "/api/runs/"+lastRunID+"/continue", map[string]interface{}{
+		"pipeline_id": p.ID,
+	})
+	mustStatus(t, resp, 200)
+
+	time.Sleep(200 * time.Millisecond)
+	stateResp = doRequest(t, h, "GET", "/api/state", nil)
+	mustStatus(t, stateResp, 200)
+	state = decodeJSON[runner.OrchestratorState](t, stateResp)
+	for _, rp := range state.RunningPipelines {
+		if rp.PipelineID == p.ID {
+			if rp.Iteration != 2 {
+				t.Fatalf("ContinueRun should preserve iteration=2, got %d", rp.Iteration)
+			}
+			if rp.LoopTotal != 3 {
+				t.Fatalf("ContinueRun should preserve loop_total=3, got %d", rp.LoopTotal)
+			}
+			break
+		}
+	}
+
+	// Wait for remaining iterations to finish
+	waitForPipelineDone(t, h, p.ID, 15*time.Second)
+
+	// All 3 iterations should have completed
+	runsResp = doRequest(t, h, "GET", "/api/runs?pipeline_id="+p.ID, nil)
+	mustStatus(t, runsResp, 200)
+	runs = decodeJSON[[]map[string]interface{}](t, runsResp)
+	if len(runs) != 3 {
+		t.Fatalf("expected 3 total runs after ContinueRun, got %d", len(runs))
+	}
+}
+
+// ===== Webhook Tests =====
+
+func TestWebhookSentOnCompletion(t *testing.T) {
+	h := newTestHandler(t)
+
+	received := make(chan map[string]interface{}, 1)
+	webhookSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err == nil {
+			received <- payload
+		}
+		w.WriteHeader(200)
+	}))
+	defer webhookSrv.Close()
+
+	createTestTask(t, h, "wh-ok", "#!/bin/sh\nexit 0\n")
+	resp := doRequest(t, h, "POST", "/api/pipelines", map[string]interface{}{
+		"name":        "wh-pipe",
+		"webhook_url": webhookSrv.URL,
+	})
+	mustStatus(t, resp, 201)
+	p := decodeJSON[pipeline.Pipeline](t, resp)
+	mustAddTask(t, h, p.ID, "wh-ok")
+
+	startAndWait(t, h, p.ID, 10*time.Second)
+
+	select {
+	case payload := <-received:
+		if payload["event"] != "pipeline_completed" {
+			t.Fatalf("expected event pipeline_completed, got %v", payload["event"])
+		}
+		if payload["status"] != "success" {
+			t.Fatalf("expected status success, got %v", payload["status"])
+		}
+		if payload["pipeline_id"] != p.ID {
+			t.Fatalf("expected pipeline_id %s, got %v", p.ID, payload["pipeline_id"])
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("webhook was not received within timeout")
+	}
+}
+
+func TestWebhookNotSentOnManualStop(t *testing.T) {
+	h := newTestHandler(t)
+
+	received := make(chan struct{}, 1)
+	webhookSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received <- struct{}{}
+		w.WriteHeader(200)
+	}))
+	defer webhookSrv.Close()
+
+	createTestTask(t, h, "wh-stop", "#!/bin/sh\nsleep 30\necho done\n")
+	resp := doRequest(t, h, "POST", "/api/pipelines", map[string]interface{}{
+		"name":        "wh-stop-pipe",
+		"webhook_url": webhookSrv.URL,
+	})
+	mustStatus(t, resp, 201)
+	p := decodeJSON[pipeline.Pipeline](t, resp)
+	mustAddTask(t, h, p.ID, "wh-stop")
+
+	doRequest(t, h, "POST", "/api/pipelines/"+p.ID+"/start", nil)
+	time.Sleep(500 * time.Millisecond)
+	doRequest(t, h, "POST", "/api/pipelines/"+p.ID+"/stop", nil)
+	time.Sleep(3 * time.Second)
+
+	select {
+	case <-received:
+		t.Fatal("webhook should NOT be sent on manual stop")
+	default:
+		// expected — no webhook sent
+	}
+}
+
+// ===== Stop Command Execution Test =====
+
+func TestStopCommandExecuted(t *testing.T) {
+	h := newTestHandler(t)
+
+	// Create task whose stop_command writes a marker file
+	markerFile := filepath.Join(t.TempDir(), "stop-executed")
+	path := makeTar(t, "stopcmd-test", map[string]string{
+		"run.sh":  "#!/bin/sh\nsleep 30\necho done\n",
+		"stop.sh": "#!/bin/sh\ntouch '" + markerFile + "'\n",
+	})
+	resp := uploadTaskViaMultipart(t, h, path)
+	mustStatus(t, resp, 201)
+
+	p := createTestPipeline(t, h, "stopcmd-pipe")
+	mustAddTask(t, h, p.ID, "stopcmd-test")
+
+	doRequest(t, h, "POST", "/api/pipelines/"+p.ID+"/start", nil)
+	time.Sleep(500 * time.Millisecond)
+	doRequest(t, h, "POST", "/api/pipelines/"+p.ID+"/stop", nil)
+	time.Sleep(3 * time.Second)
+
+	if _, err := os.Stat(markerFile); os.IsNotExist(err) {
+		t.Fatal("stop_command was not executed: marker file not found")
+	}
+}
+
+// ===== Concurrent Pipeline Execution Test =====
+
+func TestConcurrentPipelineExecution(t *testing.T) {
+	h := newTestHandler(t)
+	createTestTask(t, h, "conc-task", "#!/bin/sh\nsleep 2\nexit 0\n")
+
+	p1 := createTestPipeline(t, h, "concurrent-a")
+	mustAddTask(t, h, p1.ID, "conc-task")
+	p2 := createTestPipeline(t, h, "concurrent-b")
+	mustAddTask(t, h, p2.ID, "conc-task")
+
+	// Start both concurrently
+	respCh1 := make(chan *http.Response, 1)
+	respCh2 := make(chan *http.Response, 1)
+	go func() { respCh1 <- doRequest(t, h, "POST", "/api/pipelines/"+p1.ID+"/start", nil) }()
+	go func() { respCh2 <- doRequest(t, h, "POST", "/api/pipelines/"+p2.ID+"/start", nil) }()
+
+	r1 := <-respCh1
+	r2 := <-respCh2
+	if r1.StatusCode != 200 {
+		t.Fatalf("pipeline-a start failed: %d", r1.StatusCode)
+	}
+	if r2.StatusCode != 200 {
+		t.Fatalf("pipeline-b start failed: %d", r2.StatusCode)
+	}
+
+	// Verify state shows both running
+	time.Sleep(100 * time.Millisecond)
+	stateResp := doRequest(t, h, "GET", "/api/state", nil)
+	mustStatus(t, stateResp, 200)
+	state := decodeJSON[runner.OrchestratorState](t, stateResp)
+	running := make(map[string]bool)
+	for _, rp := range state.RunningPipelines {
+		running[rp.PipelineID] = true
+	}
+	if !running[p1.ID] || !running[p2.ID] {
+		t.Fatal("both pipelines should be running concurrently")
+	}
+
+	// Both should complete successfully
+	waitForPipelineDone(t, h, p1.ID, 10*time.Second)
+	waitForPipelineDone(t, h, p2.ID, 10*time.Second)
+
+	// Verify both produced successful runs
+	for _, pid := range []string{p1.ID, p2.ID} {
+		resp := doRequest(t, h, "GET", "/api/runs?pipeline_id="+pid, nil)
+		mustStatus(t, resp, 200)
+		runs := decodeJSON[[]map[string]interface{}](t, resp)
+		if len(runs) == 0 {
+			t.Fatalf("pipeline %s should have at least 1 run", pid)
+		}
+		if runs[0]["status"] != "success" {
+			t.Fatalf("pipeline %s expected success, got %v", pid, runs[0]["status"])
+		}
+	}
+}
+
+// ===== Loop Count Zero (Forever) Test =====
+
+func TestLoopCountZeroRunsUntilStopped(t *testing.T) {
+	h := newTestHandler(t)
+	createTestTask(t, h, "forever-task", "#!/bin/sh\necho forever\nexit 0\n")
+
+	resp := doRequest(t, h, "POST", "/api/pipelines", map[string]interface{}{
+		"name":       "forever-loop",
+		"loop_count": 0,
+	})
+	mustStatus(t, resp, 201)
+	p := decodeJSON[pipeline.Pipeline](t, resp)
+	mustAddTask(t, h, p.ID, "forever-task")
+
+	doRequest(t, h, "POST", "/api/pipelines/"+p.ID+"/start", nil)
+
+	// Let it run for a few iterations
+	time.Sleep(2 * time.Second)
+
+	// Stop it
+	doRequest(t, h, "POST", "/api/pipelines/"+p.ID+"/stop", nil)
+	time.Sleep(1 * time.Second)
+
+	// Verify multiple runs were created
+	runsResp := doRequest(t, h, "GET", "/api/runs?pipeline_id="+p.ID, nil)
+	mustStatus(t, runsResp, 200)
+	runs := decodeJSON[[]map[string]interface{}](t, runsResp)
+	if len(runs) < 2 {
+		t.Fatalf("expected at least 2 runs for loop_count=0, got %d", len(runs))
+	}
+
+	// Verify pipeline stopped (no longer running)
+	stateResp := doRequest(t, h, "GET", "/api/state", nil)
+	mustStatus(t, stateResp, 200)
+	state := decodeJSON[runner.OrchestratorState](t, stateResp)
+	for _, rp := range state.RunningPipelines {
+		if rp.PipelineID == p.ID {
+			t.Fatal("pipeline should not be running after stop")
+		}
+	}
+}
+
+// ===== Task Config Validation Tests =====
+
+func TestUpdateTaskInvalidOnTimeout(t *testing.T) {
+	h := newTestHandler(t)
+	createTestTask(t, h, "val-task", "#!/bin/sh\necho ok\n")
+
+	resp := doRequest(t, h, "PUT", "/api/tasks/val-task", map[string]interface{}{
+		"on_timeout": "garbage",
+	})
+	if resp.StatusCode < 400 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected error for invalid on_timeout, got %d: %s", resp.StatusCode, body)
+	}
+}
+
+func TestUpdateTaskValidOnTimeout(t *testing.T) {
+	h := newTestHandler(t)
+	createTestTask(t, h, "val2-task", "#!/bin/sh\necho ok\n")
+
+	for _, val := range []string{"skip", "fail", ""} {
+		resp := doRequest(t, h, "PUT", "/api/tasks/val2-task", map[string]interface{}{
+			"on_timeout": val,
+		})
+		mustStatus(t, resp, 200)
+	}
+}
+
+// ===== Log Retrieval Edge Case Tests =====
+
+func TestGetRunLogsInvalidTaskIdx(t *testing.T) {
+	h := newTestHandler(t)
+	createTestTask(t, h, "log-idx", "#!/bin/sh\necho ok\nexit 0\n")
+	p := createTestPipeline(t, h, "log-idx-pipe")
+	mustAddTask(t, h, p.ID, "log-idx")
+
+	runID, _ := startAndWait(t, h, p.ID, 10*time.Second)
+
+	resp := doRequest(t, h, "GET", "/api/runs/"+runID+"?log=1&task=log-idx&task_idx=abc", nil)
+	if resp.StatusCode != 400 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 400 for invalid task_idx, got %d: %s", resp.StatusCode, body)
+	}
+}

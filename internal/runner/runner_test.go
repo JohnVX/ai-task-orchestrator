@@ -621,3 +621,253 @@ func TestLoopExecution(t *testing.T) {
 		t.Fatalf("unexpected run ID: %s", runID)
 	}
 }
+
+// ===== Crash Recovery Tests =====
+
+func TestRecoverOnStartupMarksTasksCrashed(t *testing.T) {
+	dir := t.TempDir()
+	dataDir := filepath.Join(dir, "data")
+	tasksDir := filepath.Join(dataDir, "tasks")
+	taskMetaDir := filepath.Join(dataDir, "task_meta")
+	pipelinesDir := filepath.Join(dataDir, "pipelines")
+	runsDir := filepath.Join(dataDir, "runs")
+
+	for _, d := range []string{tasksDir, taskMetaDir, pipelinesDir, runsDir} {
+		os.MkdirAll(d, 0755)
+	}
+
+	// Create a task
+	taskName := "recover-task"
+	taskDir := filepath.Join(tasksDir, taskName)
+	os.MkdirAll(taskDir, 0755)
+	os.WriteFile(filepath.Join(taskDir, "run.sh"), []byte("#!/bin/sh\nsleep 30\nexit 0\n"), 0755)
+
+	meta := task.Meta{
+		Name:        taskName,
+		PackagePath: "tasks/" + taskName,
+		RunCommand:  "./run.sh",
+	}
+	writeJSONFile(t, filepath.Join(taskMetaDir, taskName+".json"), meta)
+
+	taskMgr := task.NewManager(tasksDir, taskMetaDir, pipelinesDir)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mgr := NewManager(runsDir, dataDir, taskMgr, logger)
+	mgr.SetPipelineStatusSetter(&stubStatusSetter{})
+
+	// Create a run directory with a running task instance
+	runDir := filepath.Join(runsDir, "run-p1-001")
+	taskInstanceDir := filepath.Join(runDir, "recover-task-0")
+	os.MkdirAll(taskInstanceDir, 0755)
+
+	now := time.Now().UTC()
+	writeTaskMeta(taskInstanceDir, taskName, "run-p1-001", "pipeline-1",
+		TaskStatusRunning, &now, nil, -1, 0)
+
+	// Write orchestrator_state.json with a dead PID
+	statePath := filepath.Join(dataDir, "orchestrator_state.json")
+	state := OrchestratorState{
+		PID: 99999, // definitely not running
+		RunningPipelines: []PipelineRunState{
+			{
+				PipelineID:   "pipeline-1",
+				CurrentTask:  taskName,
+				CurrentRunID: "run-p1-001",
+				TaskIndex:    0,
+				Iteration:    1,
+				LoopTotal:    1,
+			},
+		},
+	}
+	writeJSONFile(t, statePath, state)
+
+	// Run recovery
+	if err := mgr.RecoverOnStartup(); err != nil {
+		t.Fatalf("RecoverOnStartup: %v", err)
+	}
+
+	// Verify task was marked crashed
+	data, err := os.ReadFile(filepath.Join(taskInstanceDir, "meta.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var inst TaskInstance
+	if err := json.Unmarshal(data, &inst); err != nil {
+		t.Fatal(err)
+	}
+	if inst.Status != TaskStatusCrashed {
+		t.Fatalf("expected crashed status after recovery, got %s", inst.Status)
+	}
+
+	// Verify state file was cleared
+	if _, err := os.Stat(statePath); !os.IsNotExist(err) {
+		t.Fatal("orchestrator_state.json should be removed after recovery")
+	}
+}
+
+func TestRecoverOnStartupRejectsAliveProcess(t *testing.T) {
+	dir := t.TempDir()
+	dataDir := filepath.Join(dir, "data")
+	for _, d := range []string{"tasks", "task_meta", "pipelines", "runs"} {
+		os.MkdirAll(filepath.Join(dataDir, d), 0755)
+	}
+
+	taskMgr := task.NewManager(filepath.Join(dataDir, "tasks"), filepath.Join(dataDir, "task_meta"), filepath.Join(dataDir, "pipelines"))
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mgr := NewManager(filepath.Join(dataDir, "runs"), dataDir, taskMgr, logger)
+
+	// Write state with our own PID (alive)
+	state := OrchestratorState{
+		PID:              os.Getpid(),
+		RunningPipelines: []PipelineRunState{{PipelineID: "p1", CurrentTask: "t", CurrentRunID: "r1"}},
+	}
+	writeJSONFile(t, filepath.Join(dataDir, "orchestrator_state.json"), state)
+
+	err := mgr.RecoverOnStartup()
+	if err == nil {
+		t.Fatal("expected error when another instance is running")
+	}
+	if !strings.Contains(err.Error(), "another orchestrator instance is running") {
+		t.Fatalf("expected 'another orchestrator instance is running', got: %v", err)
+	}
+}
+
+// ===== Cron Matching Tests =====
+
+func TestMatchCron(t *testing.T) {
+	// Use a known time: Monday 2026-05-25 09:30:00 UTC
+	ref := time.Date(2026, 5, 25, 9, 30, 0, 0, time.UTC)
+
+	tests := []struct {
+		expr    string
+		matches bool
+	}{
+		// Wildcard
+		{"* * * * *", true},
+		// Exact minute match
+		{"30 9 25 5 1", true},
+		// Exact minute no-match
+		{"31 9 25 5 1", false},
+		// Range
+		{"0-59 9 25 5 1", true},
+		{"0-29 9 25 5 1", false}, // minute 30 not in range
+		// Step
+		{"*/5 * * * *", true},  // minute 30 divisible by 5
+		{"*/7 * * * *", false}, // minute 30 not divisible by 7
+		// N/step from start (minute 30: (30-5)%5==0)
+		{"5/5 * * * *", true},
+		// Comma list
+		{"15,30,45 * * * *", true},
+		{"15,45 * * * *", false},
+		// Day of week
+		{"30 9 * * 1", true},  // Monday
+		{"30 9 * * 0", false}, // Sunday
+	}
+
+	for _, tt := range tests {
+		t.Run("cron_"+strings.ReplaceAll(tt.expr, " ", "_"), func(t *testing.T) {
+			result := MatchCron(tt.expr, ref)
+			if result != tt.matches {
+				t.Fatalf("MatchCron(%q, %s) = %v, want %v", tt.expr,
+					ref.Format(time.RFC3339), result, tt.matches)
+			}
+		})
+	}
+}
+
+func TestMatchCronStepFromNumber(t *testing.T) {
+	// Regression test for H2 bug: N/step with start value
+	// "5/5" means: start at 5, then every 5 mins → 5,10,15,20,25,30,35,40,45,50,55
+	// Before H2 fix, value < start was incorrectly treated as a match because
+	// the code used n != value instead of value < n
+
+	// minute 3 < 5: below start, should not match
+	ref := time.Date(2026, 5, 25, 9, 3, 0, 0, time.UTC)
+	if MatchCron("5/5 * * * *", ref) {
+		t.Fatal("minute 3 should not match 5/5 (value < start)")
+	}
+	// minute 7 > 5 but not on step (2%5 != 0), should not match
+	ref = time.Date(2026, 5, 25, 9, 7, 0, 0, time.UTC)
+	if MatchCron("5/5 * * * *", ref) {
+		t.Fatal("minute 7 should not match 5/5 (not on step)")
+	}
+	// minute 25: (25-5)%5==0, should match
+	ref = time.Date(2026, 5, 25, 9, 25, 0, 0, time.UTC)
+	if !MatchCron("5/5 * * * *", ref) {
+		t.Fatal("minute 25 should match 5/5: (25-5)%5==0")
+	}
+}
+
+// ===== StopAll Test =====
+
+func TestStopAllStopsRunningPipelines(t *testing.T) {
+	dir := t.TempDir()
+	dataDir := filepath.Join(dir, "data")
+	tasksDir := filepath.Join(dataDir, "tasks")
+	taskMetaDir := filepath.Join(dataDir, "task_meta")
+	pipelinesDir := filepath.Join(dataDir, "pipelines")
+	runsDir := filepath.Join(dataDir, "runs")
+
+	for _, d := range []string{tasksDir, taskMetaDir, pipelinesDir, runsDir} {
+		os.MkdirAll(d, 0755)
+	}
+
+	// Create a task that sleeps
+	taskName := "stopall-task"
+	taskDir := filepath.Join(tasksDir, taskName)
+	os.MkdirAll(taskDir, 0755)
+	os.WriteFile(filepath.Join(taskDir, "run.sh"), []byte("#!/bin/sh\nsleep 30\nexit 0\n"), 0755)
+
+	meta := task.Meta{
+		Name:        taskName,
+		PackagePath: "tasks/" + taskName,
+		RunCommand:  "./run.sh",
+	}
+	writeJSONFile(t, filepath.Join(taskMetaDir, taskName+".json"), meta)
+
+	taskMgr := task.NewManager(tasksDir, taskMetaDir, pipelinesDir)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mgr := NewManager(runsDir, dataDir, taskMgr, logger)
+	mgr.SetPipelineStatusSetter(&stubStatusSetter{})
+
+	// Start two pipelines
+	tasks := []RunTask{{Name: taskName}}
+	runID1, err := mgr.Start("pipeline-a", tasks, "", "pipe-a", 1)
+	if err != nil {
+		t.Fatalf("Start pipeline-a: %v", err)
+	}
+	runID2, err := mgr.Start("pipeline-b", tasks, "", "pipe-b", 1)
+	if err != nil {
+		t.Fatalf("Start pipeline-b: %v", err)
+	}
+
+	time.Sleep(200 * time.Millisecond)
+
+	// Verify both are running
+	if !mgr.IsRunning("pipeline-a") || !mgr.IsRunning("pipeline-b") {
+		t.Fatal("both pipelines should be running")
+	}
+
+	// Stop all
+	mgr.StopAll()
+	time.Sleep(2 * time.Second)
+
+	// Verify both stopped
+	if mgr.IsRunning("pipeline-a") || mgr.IsRunning("pipeline-b") {
+		t.Fatal("both pipelines should be stopped after StopAll")
+	}
+
+	// Verify both runs were marked stopped
+	for _, rid := range []string{runID1, runID2} {
+		instances, err := mgr.RunInfo(rid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(instances) == 0 {
+			t.Fatalf("no instances for %s", rid)
+		}
+		s := instances[0].Status
+		if s != TaskStatusStopped && s != TaskStatusPending {
+			t.Fatalf("expected stopped or pending after StopAll for %s, got %s", rid, s)
+		}
+	}
+}

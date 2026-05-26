@@ -248,13 +248,14 @@ func (m *Manager) ReorderTasks(pipelineID string, indices []int) error {
 	seen := make(map[int]bool, len(indices))
 	newTasks := make([]TaskRef, 0, len(indices))
 	for _, idx := range indices {
-		if idx >= 0 && idx < len(oldTasks) {
-			if seen[idx] {
-				return fmt.Errorf("duplicate index %d in reorder", idx)
-			}
-			seen[idx] = true
-			newTasks = append(newTasks, oldTasks[idx])
+		if idx < 0 || idx >= len(oldTasks) {
+			return fmt.Errorf("task index %d out of range [0, %d)", idx, len(oldTasks))
 		}
+		if seen[idx] {
+			return fmt.Errorf("duplicate index %d in reorder", idx)
+		}
+		seen[idx] = true
+		newTasks = append(newTasks, oldTasks[idx])
 	}
 	if len(newTasks) != len(oldTasks) {
 		return fmt.Errorf("reorder resulted in mismatched task count")

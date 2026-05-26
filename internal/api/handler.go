@@ -484,7 +484,11 @@ func (h *Handler) handleListRuns(w http.ResponseWriter, r *http.Request) {
 		runs = []runSummary{}
 	}
 	sort.Slice(runs, func(i, j int) bool {
-		return runs[i].RunID > runs[j].RunID
+		si := strings.LastIndex(runs[i].RunID, "-")
+		sj := strings.LastIndex(runs[j].RunID, "-")
+		ni, _ := strconv.Atoi(runs[i].RunID[si+1:])
+		nj, _ := strconv.Atoi(runs[j].RunID[sj+1:])
+		return ni > nj
 	})
 	writeJSON(w, http.StatusOK, runs)
 }
@@ -499,7 +503,11 @@ func (h *Handler) handleGetRun(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		taskIdxStr := r.URL.Query().Get("task_idx")
-		taskIdx, _ := strconv.Atoi(taskIdxStr)
+		taskIdx, err := strconv.Atoi(taskIdxStr)
+		if taskIdxStr != "" && err != nil {
+			writeError(w, http.StatusBadRequest, "invalid task_idx parameter")
+			return
+		}
 		stdout, stderr, err := h.Runner.RunLog(id, taskName, taskIdx)
 		if err != nil {
 			writeError(w, http.StatusNotFound, err.Error())

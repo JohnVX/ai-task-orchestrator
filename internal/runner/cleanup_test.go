@@ -59,12 +59,12 @@ func TestCleanupOldRunsOverLimit(t *testing.T) {
 
 	// Verify the 3 newest runs survived: run-pipeline-1-008, -009, -010
 	for i := 8; i <= 10; i++ {
-		runID := fmt.Sprintf("run-pipeline-1-%03d", i)
+		runID := fmt.Sprintf("run-pipeline-1-%06d", i)
 		assertRunExists(t, m.runsDir, runID)
 	}
 	// Verify the 7 oldest are gone
 	for i := 1; i <= 7; i++ {
-		runID := fmt.Sprintf("run-pipeline-1-%03d", i)
+		runID := fmt.Sprintf("run-pipeline-1-%06d", i)
 		assertRunNotExists(t, m.runsDir, runID)
 	}
 }
@@ -108,11 +108,11 @@ func TestCleanupOldRunsMultiplePipelines(t *testing.T) {
 
 	// pipeline-1: runs 001-003 deleted, 004-008 remain
 	for i := 1; i <= 3; i++ {
-		runID := fmt.Sprintf("run-pipeline-1-%03d", i)
+		runID := fmt.Sprintf("run-pipeline-1-%06d", i)
 		assertRunNotExists(t, m.runsDir, runID)
 	}
 	for i := 4; i <= 8; i++ {
-		runID := fmt.Sprintf("run-pipeline-1-%03d", i)
+		runID := fmt.Sprintf("run-pipeline-1-%06d", i)
 		assertRunExists(t, m.runsDir, runID)
 	}
 }
@@ -194,7 +194,7 @@ func createRuns(t *testing.T, runsDir, pipelineID string, n int) {
 	t.Helper()
 	now := time.Now().UTC()
 	for i := 1; i <= n; i++ {
-		runID := fmt.Sprintf("run-%s-%03d", pipelineID, i)
+		runID := fmt.Sprintf("run-%s-%06d", pipelineID, i)
 		runDir := filepath.Join(runsDir, runID)
 		taskDir := filepath.Join(runDir, "task-A-0")
 		if err := os.MkdirAll(taskDir, 0755); err != nil {

@@ -323,6 +323,9 @@ func (m *Manager) ParseReadme(name string) (content string, found bool) {
 
 // SetConfig persists task configuration: commands, timeout, continue-on-failure settings.
 func (m *Manager) SetConfig(name, runCmd, stopCmd string, timeoutEnabled bool, timeoutSeconds int, onTimeout string, continueOnFailure bool, retryCount int) error {
+	if onTimeout != "" && onTimeout != "skip" && onTimeout != "fail" {
+		return fmt.Errorf("on_timeout must be \"skip\", \"fail\", or empty to inherit default")
+	}
 	meta, err := m.readMeta(name)
 	if err != nil {
 		return fmt.Errorf("task %q not found: %w", name, err)

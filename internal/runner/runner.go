@@ -155,7 +155,17 @@ func (m *Manager) nextRunID(pipelineID string) string {
 			maxN = n
 		}
 	}
-	return fmt.Sprintf("%s%03d", prefix, maxN+1)
+	return fmt.Sprintf("%s%06d", prefix, maxN+1)
+}
+
+// runSeq extracts the numeric suffix from a run ID (e.g., "run-p1-000001" → 1).
+func runSeq(runID string) int {
+	idx := strings.LastIndex(runID, "-")
+	if idx < 0 {
+		return 0
+	}
+	n, _ := strconv.Atoi(runID[idx+1:])
+	return n
 }
 
 func clearDir(path string) error {
@@ -252,7 +262,7 @@ func (m *Manager) Start(pipelineID string, tasks []RunTask, webhookURL string, p
 	ctl := &runControl{stopCh: make(chan struct{})}
 	m.running[pipelineID] = ctl
 
-	go m.runLoop(pipelineID, runID, runDir, tasks, ctl, webhookURL, pipelineName, 0, loopCount)
+	go m.runLoop(pipelineID, runID, runDir, tasks, ctl, webhookURL, pipelineName, 0, loopCount, 0, loopCount)
 
 	return runID, nil
 }
@@ -299,7 +309,7 @@ func (m *Manager) ContinueRun(pipelineID, runID string, tasks []RunTask, webhook
 		os.MkdirAll(filepath.Join(runDir, fmt.Sprintf("%s-%d", t.Name, i)), 0755)
 	}
 
-	remainingLoop := resolveRemainingLoop(runDir)
+	remainingLoop, stoppedIteration, originalTotal := resolveRemainingLoop(runDir)
 
 	m.stateMu.Lock()
 	state, _ := m.readState()
@@ -307,8 +317,8 @@ func (m *Manager) ContinueRun(pipelineID, runID string, tasks []RunTask, webhook
 		state.PID = os.Getpid()
 	}
 	state.RunningPipelines = append(state.RunningPipelines, PipelineRunState{
-			Iteration:    1,
-			LoopTotal:    remainingLoop,
+			Iteration:    stoppedIteration,
+			LoopTotal:    originalTotal,
 		PipelineID:   pipelineID,
 		CurrentTask:  tasks[startIdx].Name,
 		CurrentRunID: runID,
@@ -327,12 +337,12 @@ func (m *Manager) ContinueRun(pipelineID, runID string, tasks []RunTask, webhook
 	ctl := &runControl{stopCh: make(chan struct{})}
 	m.running[pipelineID] = ctl
 
-	go m.runLoop(pipelineID, runID, runDir, tasks, ctl, webhookURL, pipelineName, startIdx, remainingLoop)
+	go m.runLoop(pipelineID, runID, runDir, tasks, ctl, webhookURL, pipelineName, startIdx, remainingLoop, stoppedIteration-1, originalTotal)
 
 	return nil
 }
 
-func (m *Manager) runLoop(pipelineID, runID, runDir string, tasks []RunTask, ctl *runControl, webhookURL string, pipelineName string, startIdx int, loopCount int) {
+func (m *Manager) runLoop(pipelineID, runID, runDir string, tasks []RunTask, ctl *runControl, webhookURL string, pipelineName string, startIdx int, loopCount int, iterationBase int, loopDisplay int) {
 	defer func() {
 		m.removeFromState(pipelineID)
 		m.logger.Info("pipeline finished", "pipeline_id", pipelineID, "run_id", runID)
@@ -358,14 +368,14 @@ func (m *Manager) runLoop(pipelineID, runID, runDir string, tasks []RunTask, ctl
 				os.MkdirAll(filepath.Join(runDir, fmt.Sprintf("%s-%d", t.Name, i)), 0755)
 			}
 
-			m.updateStateRunID(pipelineID, runID, tasks[0].Name, iteration+1, loopCount)
-			m.logger.Info("loop iteration started", "pipeline_id", pipelineID, "run_id", runID, "iteration", iteration+1)
+			m.updateStateRunID(pipelineID, runID, tasks[0].Name, iterationBase+iteration+1, loopDisplay)
+			m.logger.Info("loop iteration started", "pipeline_id", pipelineID, "run_id", runID, "iteration", iterationBase+iteration+1)
 			m.appendEvent(runID, "%s pipeline=%s event=pipeline_started iteration=%d", time.Now().UTC().Format(time.RFC3339), pipelineID, iteration+1)
 			startIdx = 0
 		}
 
 		// Write iteration metadata for recovery (ContinueRun needs it).
-		writeIterationMeta(runDir, iteration+1, loopCount)
+		writeIterationMeta(runDir, iterationBase+iteration+1, loopDisplay)
 
 		// Check stop before each iteration.
 		select {
@@ -1058,26 +1068,26 @@ func writeIterationMeta(runDir string, iteration, loopTotal int) {
 	fmt.Fprintf(f, "{\"iteration\":%d,\"loop_total\":%d}\n", iteration, loopTotal)
 }
 
-func resolveRemainingLoop(runDir string) int {
+func resolveRemainingLoop(runDir string) (remaining int, stoppedIteration int, originalTotal int) {
 	data, err := os.ReadFile(filepath.Join(runDir, "iteration.json"))
 	if err != nil {
-		return 1
+		return 1, 1, 1
 	}
 	var it struct {
 		Iteration int `json:"iteration"`
 		LoopTotal int `json:"loop_total"`
 	}
 	if json.Unmarshal(data, &it) != nil {
-		return 1
+		return 1, 1, 1
 	}
 	if it.LoopTotal <= 0 {
-		return 0 // forever loop
+		return 0, it.Iteration, 0 // forever loop
 	}
-	remaining := it.LoopTotal - it.Iteration + 1
+	remaining = it.LoopTotal - it.Iteration + 1
 	if remaining < 1 {
 		remaining = 1
 	}
-	return remaining
+	return remaining, it.Iteration, it.LoopTotal
 }
 
 func pidAlive(pid int) bool {

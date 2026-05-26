@@ -68,7 +68,7 @@ func (m *Manager) CleanupOldRuns(maxRuns int) (deleted int, freedBytes int64) {
 		}
 
 		sort.Slice(runs, func(i, j int) bool {
-			return runs[i].runID < runs[j].runID
+			return runSeq(runs[i].runID) < runSeq(runs[j].runID)
 		})
 
 		toDelete := runs[:len(runs)-maxRuns]

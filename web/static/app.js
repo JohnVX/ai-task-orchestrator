@@ -531,7 +531,7 @@ function updateRunButtons(pipeline, lastRunStatus) {
   const running = pipeline.status === 'running';
   runBtn.disabled = running;
   stopBtn.disabled = !running;
-  const retryable = ['failed', 'timeout', 'stopped', 'crashed'];
+  const retryable = ['failed'];
   retryBtn.style.display = (!running && retryable.includes(lastRunStatus)) ? '' : 'none';
 }
 
@@ -612,7 +612,7 @@ function initRunButtons() {
       const runs = await api.getRuns(currentPipelineId);
       if (runs.length === 0) { alert('没有可续跑的运行记录'); return; }
       const lastRun = runs[0];
-      const retryable = ['failed', 'timeout', 'stopped', 'crashed'];
+      const retryable = ['failed'];
       if (!retryable.includes(lastRun.status)) {
         alert('上次运行已成功，无需续跑');
         return;
