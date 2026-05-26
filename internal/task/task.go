@@ -7,9 +7,15 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
-	"regexp"
+)
+
+// Task types.
+const (
+	TypeSelfContained = "self-contained"
+	TypeLLMPrompt     = "llm-prompt"
 )
 
 // Meta holds orchestrator-managed metadata for a single task.
@@ -19,6 +25,7 @@ type Meta struct {
 	UploadedAt        time.Time `json:"uploaded_at"`
 	RunCommand        string    `json:"run_command"`
 	StopCommand       string    `json:"stop_command"`
+	Type              string    `json:"type,omitempty"`
 	ReadmePath        string    `json:"readme_path,omitempty"`
 	TimeoutEnabled    bool      `json:"timeout_enabled"`
 	TimeoutSeconds    int       `json:"timeout_seconds"`
@@ -164,18 +171,30 @@ func (m *Manager) Upload(tarPath string) (*Meta, error) {
 		readmePath = "README.md"
 	}
 
-	runCmd, stopCmd := "./run.sh", "./stop.sh"
-	if rc, sc := parseTaskDescriptor(dstDir); rc != "" || sc != "" {
+	taskType, rc, sc := parseTaskDescriptor(dstDir)
+
+	var runCmd, stopCmd string
+	switch taskType {
+	case TypeLLMPrompt:
+		if _, err := os.Stat(filepath.Join(dstDir, "prompt.md")); os.IsNotExist(err) {
+			return nil, fmt.Errorf("llm-prompt task %q requires prompt.md in package", name)
+		}
+	case "", TypeSelfContained:
+		taskType = TypeSelfContained
+		runCmd, stopCmd = "./run.sh", "./stop.sh"
 		if rc != "" {
 			runCmd = rc
 		}
 		if sc != "" {
 			stopCmd = sc
 		}
+	default:
+		return nil, fmt.Errorf("unknown task type %q in for-task-orchestrator.txt", taskType)
 	}
 
 	meta := &Meta{
 		Name:        name,
+		Type:        taskType,
 		PackagePath: filepath.Join("tasks", name),
 		UploadedAt:  time.Now().UTC(),
 		RunCommand:  runCmd,
@@ -230,7 +249,7 @@ func extractTar(tarPath, dst string) error {
 		}
 	}
 	return nil
-	}
+}
 
 // copyDir copies a directory recursively. Used as fallback when os.Rename fails
 // across filesystem boundaries (EXDEV).
@@ -257,10 +276,10 @@ func copyDir(src, dst string) error {
 
 // parseTaskDescriptor reads for-task-orchestrator.txt and extracts start/stop commands.
 // First matching line wins; duplicates are silently ignored.
-func parseTaskDescriptor(dir string) (runCmd, stopCmd string) {
+func parseTaskDescriptor(dir string) (taskType, runCmd, stopCmd string) {
 	data, err := os.ReadFile(filepath.Join(dir, "for-task-orchestrator.txt"))
 	if err != nil {
-		return "", ""
+		return "", "", ""
 	}
 	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
@@ -273,6 +292,9 @@ func parseTaskDescriptor(dir string) (runCmd, stopCmd string) {
 			if line == "" {
 				continue
 			}
+		}
+		if rest, ok := strings.CutPrefix(line, "type:"); ok && taskType == "" {
+			taskType = strings.TrimSpace(rest)
 		}
 		if rest, ok := strings.CutPrefix(line, "start:"); ok && runCmd == "" {
 			runCmd = strings.TrimSpace(rest)

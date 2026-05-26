@@ -236,7 +236,7 @@ func (h *Handler) handleCreatePipeline(w http.ResponseWriter, r *http.Request) {
 		Name       string `json:"name"`
 		Schedule   string `json:"schedule"`
 		WebhookURL string `json:"webhook_url"`
-		LoopCount         *int    `json:"loop_count,omitempty"`
+		LoopCount  *int   `json:"loop_count,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Name == "" {
 		h.writeError(w, http.StatusBadRequest, "pipeline name required")
@@ -266,6 +266,7 @@ func (h *Handler) handleGetPipeline(w http.ResponseWriter, r *http.Request) {
 	// Enrich tasks with metadata and pipeline-level overrides.
 	type taskInfo struct {
 		Name              string  `json:"name"`
+		Type              string  `json:"type,omitempty"`
 		RunCmd            string  `json:"run_command"`
 		StopCmd           string  `json:"stop_command"`
 		Readme            string  `json:"readme"`
@@ -284,6 +285,7 @@ func (h *Handler) handleGetPipeline(w http.ResponseWriter, r *http.Request) {
 			RetryCount:        ref.RetryCount,
 		}
 		if meta, err := h.Task.Get(ref.Name); err == nil {
+			info.Type = meta.Type
 			info.RunCmd = meta.RunCommand
 			info.StopCmd = meta.StopCommand
 		}
@@ -308,7 +310,7 @@ func (h *Handler) handleUpdatePipeline(w http.ResponseWriter, r *http.Request) {
 		Tasks             []string `json:"tasks"`
 		Schedule          string   `json:"schedule"`
 		WebhookURL        string   `json:"webhook_url"`
-		LoopCount         *int    `json:"loop_count,omitempty"`
+		LoopCount         *int     `json:"loop_count,omitempty"`
 		TimeoutSeconds    *int     `json:"timeout_seconds,omitempty"`
 		OnTimeout         *string  `json:"on_timeout,omitempty"`
 		ContinueOnFailure *bool    `json:"continue_on_failure,omitempty"`
@@ -335,8 +337,8 @@ func (h *Handler) handleUpdatePipeline(w http.ResponseWriter, r *http.Request) {
 		err = h.Pipeline.SetSchedule(id, body.Schedule)
 	case "set_webhook":
 		err = h.Pipeline.SetWebhook(id, body.WebhookURL)
-		case "set_loop":
-			err = h.Pipeline.SetLoopCount(id, body.LoopCount)
+	case "set_loop":
+		err = h.Pipeline.SetLoopCount(id, body.LoopCount)
 	case "set_task_config":
 		err = h.Pipeline.SetTaskConfig(id, body.TaskIndex, body.TimeoutSeconds, body.OnTimeout, body.ContinueOnFailure, body.RetryCount)
 	default:
@@ -625,7 +627,6 @@ func (h *Handler) handleIndex(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) RecoverOnStartup() error {
 	return h.Runner.RecoverOnStartup()
 }
-
 
 func resolveLoopCount(lc *int) int {
 	if lc == nil {

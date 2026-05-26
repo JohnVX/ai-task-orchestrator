@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ai-task-orchestrator/internal/agent"
 	"github.com/ai-task-orchestrator/internal/api"
 	"github.com/ai-task-orchestrator/internal/logger"
 	"github.com/ai-task-orchestrator/internal/pipeline"
@@ -34,6 +35,7 @@ func main() {
 	dataDir := flag.String("data", "./data", "data directory path")
 	logLevel := flag.String("log-level", "info", "log level: debug, info, warn, error")
 	maxRuns := flag.Int("max-runs", 100, "max completed runs per pipeline (0=unlimited)")
+	llmAgent := flag.String("llm-agent", "claude-code", "LLM agent for prompt tasks (claude-code)")
 	flag.Parse()
 
 	absDataDir, err := filepath.Abs(*dataDir)
@@ -57,7 +59,14 @@ func main() {
 	slogger.Info("log rotation completed", "compressed", compressed, "deleted", deleted)
 
 	taskMgr := task.NewManager(filepath.Join(absDataDir, "tasks"), filepath.Join(absDataDir, "task_meta"), filepath.Join(absDataDir, "pipelines"))
-	runMgr := runner.NewManager(filepath.Join(absDataDir, "runs"), absDataDir, taskMgr, slogger)
+	agt, err := agent.Get(*llmAgent)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "resolve llm agent %q: %v\n", *llmAgent, err)
+		os.Exit(1)
+	}
+	slogger.Info("llm agent resolved", "agent", agt.Name())
+
+	runMgr := runner.NewManager(filepath.Join(absDataDir, "runs"), absDataDir, taskMgr, slogger, agt)
 	pipelineMgr := pipeline.NewManager(filepath.Join(absDataDir, "pipelines"), taskMgr, runMgr)
 	runMgr.SetPipelineStatusSetter(pipelineMgr)
 
@@ -177,7 +186,6 @@ func runScheduler(pipeMgr *pipeline.Manager, runMgr *runner.Manager, logger *slo
 		}
 	}
 }
-
 
 func resolveLoopCount(lc *int) int {
 	if lc == nil {

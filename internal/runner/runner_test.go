@@ -3,6 +3,7 @@ package runner
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/ai-task-orchestrator/internal/agent"
 	"io"
 	"log/slog"
 	"os"
@@ -18,9 +19,9 @@ func TestWriteTaskMetaWithIndex(t *testing.T) {
 	dir := t.TempDir()
 
 	tests := []struct {
-		name     string
-		idx      int
-		dirName  string
+		name    string
+		idx     int
+		dirName string
 	}{
 		{"task-A", 0, "task-A-0"},
 		{"task-A", 1, "task-A-1"},
@@ -265,18 +266,18 @@ func TestComputeRunStatusWithDuplicates(t *testing.T) {
 		statuses []string
 		want     string
 	}{
-		{"all success",            []string{"success", "success"},              "success"},
-		{"first success second running", []string{"success", "running"},        "running"},
-		{"some failed",           []string{"success", "failed"},                "failed"},
-		{"timeout then success",   []string{"timeout", "success"},              "success"},
-		{"stopped",                []string{"stopped"},                          "failed"},
-		{"pending",               []string{"pending", "success"},               "running"},
-		{"all unknown",           []string{"crashed", "crashed"},               "failed"},
-		{"empty",                 []string{},                                   "unknown"},
-		{"single success",        []string{"success"},                          "success"},
-		{"mixed failures",        []string{"failed", "timeout", "crashed", "stopped"}, "failed"},
-		{"running with failures", []string{"running", "failed", "success"},     "running"},
-		{"success then timeout",  []string{"success", "timeout"},               "failed"},
+		{"all success", []string{"success", "success"}, "success"},
+		{"first success second running", []string{"success", "running"}, "running"},
+		{"some failed", []string{"success", "failed"}, "failed"},
+		{"timeout then success", []string{"timeout", "success"}, "success"},
+		{"stopped", []string{"stopped"}, "failed"},
+		{"pending", []string{"pending", "success"}, "running"},
+		{"all unknown", []string{"crashed", "crashed"}, "failed"},
+		{"empty", []string{}, "unknown"},
+		{"single success", []string{"success"}, "success"},
+		{"mixed failures", []string{"failed", "timeout", "crashed", "stopped"}, "failed"},
+		{"running with failures", []string{"running", "failed", "success"}, "running"},
+		{"success then timeout", []string{"success", "timeout"}, "failed"},
 	}
 
 	for _, tt := range tests {
@@ -333,7 +334,6 @@ func readLogByPath(runsDir, taskName string, taskIdx int) (stdout, stderr string
 	return string(stdoutB), string(stderrB), nil
 }
 
-
 // --- retry tests ---
 
 func TestRetryOnTimeout(t *testing.T) {
@@ -369,7 +369,7 @@ func TestRetryOnTimeout(t *testing.T) {
 
 	taskMgr := task.NewManager(tasksDir, taskMetaDir, pipelinesDir)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	mgr := NewManager(runsDir, dataDir, taskMgr, logger)
+	mgr := NewManager(runsDir, dataDir, taskMgr, logger, agent.MustGet("claude-code"))
 	mgr.SetPipelineStatusSetter(&stubStatusSetter{})
 
 	tasks := []RunTask{
@@ -438,7 +438,7 @@ func TestNoRetryOnNonTimeoutFailure(t *testing.T) {
 
 	taskMgr := task.NewManager(tasksDir, taskMetaDir, pipelinesDir)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	mgr := NewManager(runsDir, dataDir, taskMgr, logger)
+	mgr := NewManager(runsDir, dataDir, taskMgr, logger, agent.MustGet("claude-code"))
 	mgr.SetPipelineStatusSetter(&stubStatusSetter{})
 
 	tasks := []RunTask{
@@ -514,7 +514,7 @@ echo "first attempt timeout"
 
 	taskMgr := task.NewManager(tasksDir, taskMetaDir, pipelinesDir)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	mgr := NewManager(runsDir, dataDir, taskMgr, logger)
+	mgr := NewManager(runsDir, dataDir, taskMgr, logger, agent.MustGet("claude-code"))
 	mgr.SetPipelineStatusSetter(&stubStatusSetter{})
 
 	tasks := []RunTask{
@@ -582,15 +582,15 @@ func TestLoopExecution(t *testing.T) {
 	os.WriteFile(filepath.Join(taskDir, "run.sh"), []byte("#!/bin/sh\necho ok\nexit 0\n"), 0755)
 
 	meta := task.Meta{
-		Name:           taskName,
-		PackagePath:    "tasks/" + taskName,
-		RunCommand:     "./run.sh",
+		Name:        taskName,
+		PackagePath: "tasks/" + taskName,
+		RunCommand:  "./run.sh",
 	}
 	writeJSONFile(t, filepath.Join(taskMetaDir, taskName+".json"), meta)
 
 	taskMgr := task.NewManager(tasksDir, taskMetaDir, pipelinesDir)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	mgr := NewManager(runsDir, dataDir, taskMgr, logger)
+	mgr := NewManager(runsDir, dataDir, taskMgr, logger, agent.MustGet("claude-code"))
 	mgr.SetPipelineStatusSetter(&stubStatusSetter{})
 
 	tasks := []RunTask{{Name: taskName}}
@@ -651,7 +651,7 @@ func TestRecoverOnStartupMarksTasksCrashed(t *testing.T) {
 
 	taskMgr := task.NewManager(tasksDir, taskMetaDir, pipelinesDir)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	mgr := NewManager(runsDir, dataDir, taskMgr, logger)
+	mgr := NewManager(runsDir, dataDir, taskMgr, logger, agent.MustGet("claude-code"))
 	mgr.SetPipelineStatusSetter(&stubStatusSetter{})
 
 	// Create a run directory with a running task instance
@@ -713,7 +713,7 @@ func TestRecoverOnStartupRejectsAliveProcess(t *testing.T) {
 
 	taskMgr := task.NewManager(filepath.Join(dataDir, "tasks"), filepath.Join(dataDir, "task_meta"), filepath.Join(dataDir, "pipelines"))
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	mgr := NewManager(filepath.Join(dataDir, "runs"), dataDir, taskMgr, logger)
+	mgr := NewManager(filepath.Join(dataDir, "runs"), dataDir, taskMgr, logger, agent.MustGet("claude-code"))
 
 	// Write state with our own PID (alive)
 	state := OrchestratorState{
@@ -826,7 +826,7 @@ func TestStopAllStopsRunningPipelines(t *testing.T) {
 
 	taskMgr := task.NewManager(tasksDir, taskMetaDir, pipelinesDir)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	mgr := NewManager(runsDir, dataDir, taskMgr, logger)
+	mgr := NewManager(runsDir, dataDir, taskMgr, logger, agent.MustGet("claude-code"))
 	mgr.SetPipelineStatusSetter(&stubStatusSetter{})
 
 	// Start two pipelines

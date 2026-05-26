@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ai-task-orchestrator/internal/agent"
 	"github.com/ai-task-orchestrator/internal/task"
 )
 
@@ -90,6 +91,7 @@ type Manager struct {
 	taskMgr        *task.Manager
 	pipelineStatus PipelineStatusSetter
 	logger         *slog.Logger
+	llmAgent       agent.Agent
 
 	mu      sync.Mutex
 	stateMu sync.Mutex
@@ -97,9 +99,9 @@ type Manager struct {
 }
 
 // NewManager creates a Manager. It ensures the runs directory exists.
-func NewManager(runsDir, dataDir string, taskMgr *task.Manager, logger *slog.Logger) *Manager {
+func NewManager(runsDir, dataDir string, taskMgr *task.Manager, logger *slog.Logger, llmAgent agent.Agent) *Manager {
 	os.MkdirAll(runsDir, 0755)
-	return &Manager{runsDir: runsDir, dataDir: dataDir, taskMgr: taskMgr, logger: logger, running: make(map[string]*runControl)}
+	return &Manager{runsDir: runsDir, dataDir: dataDir, taskMgr: taskMgr, logger: logger, llmAgent: llmAgent, running: make(map[string]*runControl)}
 }
 
 // SetPipelineStatusSetter sets the pipeline status updater (wired after construction).
@@ -240,8 +242,8 @@ func (m *Manager) Start(pipelineID string, tasks []RunTask, webhookURL string, p
 		state.StartTime = processStartTime(os.Getpid())
 	}
 	state.RunningPipelines = append(state.RunningPipelines, PipelineRunState{
-			Iteration:    1,
-			LoopTotal:    loopCount,
+		Iteration:    1,
+		LoopTotal:    loopCount,
 		PipelineID:   pipelineID,
 		CurrentTask:  tasks[0].Name,
 		CurrentRunID: runID,
@@ -321,8 +323,8 @@ func (m *Manager) ContinueRun(pipelineID, runID string, tasks []RunTask, webhook
 		state.StartTime = processStartTime(os.Getpid())
 	}
 	state.RunningPipelines = append(state.RunningPipelines, PipelineRunState{
-			Iteration:    stoppedIteration,
-			LoopTotal:    originalTotal,
+		Iteration:    stoppedIteration,
+		LoopTotal:    originalTotal,
 		PipelineID:   pipelineID,
 		CurrentTask:  tasks[startIdx].Name,
 		CurrentRunID: runID,
@@ -388,7 +390,7 @@ func (m *Manager) runLoop(pipelineID, runID, runDir string, tasks []RunTask, ctl
 		default:
 		}
 
-		taskLoop:
+	taskLoop:
 		for i, rt := range tasks {
 			if i < startIdx {
 				continue
@@ -482,7 +484,21 @@ func (m *Manager) runLoop(pipelineID, runID, runDir string, tasks []RunTask, ctl
 					m.appendEvent(runID, "%s task=%s status=%s", time.Now().UTC().Format(time.RFC3339), logName, TaskStatusRunning)
 				}
 
-				cmd := exec.Command("sh", "-c", meta.RunCommand)
+				var cmd *exec.Cmd
+				if meta.Type == task.TypeLLMPrompt {
+					workDir := filepath.Join(m.dataDir, meta.PackagePath)
+					promptFile := filepath.Join(workDir, "prompt.md")
+					c, cerr := m.llmAgent.BuildCommand(promptFile, workDir)
+					if cerr != nil {
+						execErr = cerr
+						timedOut = false
+						break
+					}
+					cmd = c
+				} else {
+					cmd = exec.Command("sh", "-c", meta.RunCommand)
+					cmd.Dir = filepath.Join(m.dataDir, meta.PackagePath)
+				}
 				cmd.Dir = filepath.Join(m.dataDir, meta.PackagePath)
 				cmd.Env = append(os.Environ(),
 					"TASK_DATA_READ="+filepath.Join(runDir, readBuf),

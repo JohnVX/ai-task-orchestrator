@@ -30,12 +30,13 @@ go build -o ai-task-orchestrator .
 | `-data` | `./data` | 数据目录 |
 | `-log-level` | `info` | 日志级别: debug / info / warn / error |
 | `-max-runs` | `100` | 每条 pipeline 最大保留 run 数量，超出删最早的 (0=不限制) |
+| `-llm-agent` | `claude-code` | LLM 提示词任务使用的 agent，目前仅支持 `claude-code` |
 
 ## 核心概念
 
 | 概念 | 说明 |
 |---|---|
-| **Task** | 用户上传的 tar 包。Task name 取自文件名，全局唯一，不可改名。可通过 `for-task-orchestrator.txt` 自描述 run/stop 命令，否则默认 `./run.sh` / `./stop.sh`。支持下载导出。 |
+| **Task** | 用户上传的 tar 包。Task name 取自文件名，全局唯一，不可改名。支持两种类型：`self-contained`（默认，自包含可执行脚本）和 `llm-prompt`（LLM 提示词任务，包含 `prompt.md`，由 LLM Agent 执行）。类型通过 `for-task-orchestrator.txt` 的 `type:` 字段声明。 |
 | **Pipeline** | 多个 task 的有序编排，严格串行执行。支持同一 task 在同一 pipeline 中多次出现（如 taskA → taskA → taskB → taskB），每个出现称为一个 task 实例，由其在数组中的索引唯一标识。 |
 | **Run** | Pipeline 的一次实际执行，包含每个 task 的运行状态、日志和数据。 |
 
@@ -189,11 +190,29 @@ Run 中 task 实例状态：`pending` | `running` | `success` | `failed` | `stop
 | 操作 | 规则 |
 |---|---|
 | 上传 | `task_xxx.tar` 文件名（去 `.tar`）即 task name，全局唯一，不可改名。解包时若顶层恰好一个目录则直接用，若为散文件则自动用 task name 创建目录包裹。同名拒绝上传。Task name 仅允许字母、数字、下划线、连字符和点。 |
-| 自描述 | 包根目录下 `for-task-orchestrator.txt`，格式 `start: <cmd>` / `stop: <cmd>`，上传时自动解析，优先级高于默认的 `./run.sh` / `./stop.sh`。 |
+| 自描述 | 包根目录下 `for-task-orchestrator.txt`，格式 `type: <type>`（可选）、`start: <cmd>` / `stop: <cmd>`。上传时自动解析，`start:`/`stop:` 优先级高于默认的 `./run.sh` / `./stop.sh`。 |
 | 解析 | 在包目录下大小写不敏感查找 `README.md` / `readme.md` / `readme` / `readme.txt`，优先级：`README.md` > `readme.md` > `readme` > `readme.txt`。找到则解析展示。 |
 | 配置 | 运行/停止命令、超时设置（`timeout_enabled`、`timeout_seconds`、`on_timeout`）、失败继续（`continue_on_failure`）及超时重试（`retry_count`）存入 `task_meta/{name}.json`，跨 pipeline 共享。 |
 | 下载 | 将 task 包目录打包为 tar，通过 API 导出。 |
 | 删除 | 查询所有 pipeline 文件，若有关联则拒绝。二次确认后删除包目录 `tasks/{name}/` + 元数据 `task_meta/{name}.json`。 |
+
+#### Task 类型
+
+`for-task-orchestrator.txt` 支持 `type:` 字段声明任务类型：
+
+| `type` 值 | 说明 |
+|---|---|
+| `self-contained` | 默认类型。自包含任务，需要 `start:` 命令（或默认 `./run.sh`）。平台直接 `sh -c` 执行。 |
+| `llm-prompt` | LLM 提示词任务。包内必须包含 `prompt.md` 文件。忽略 `start:`/`stop:` 字段，由 LLM Agent（通过 `--llm-agent` 指定的 CLI，默认 `claude-code`）以 `claude -p prompt.md` 方式在 task 包目录下执行。SIGTERM 信号停止。 |
+
+`llm-prompt` 包示例：
+
+```
+my-llm-task.tar
+├── for-task-orchestrator.txt    ← 内容: type: llm-prompt
+├── prompt.md                    ← LLM 提示词（Agent 入口）
+└── script.py                    ← prompt.md 中可以引用 ./script.py
+```
 
 ### Pipeline 管理
 
@@ -395,15 +414,16 @@ web/
 ## 测试
 
 ```bash
-go test ./... -count=1   # 全部 139 个测试（~15s + ~100s 执行时间）
+go test ./... -count=1   # 全部 146 个测试（~15s + ~105s 执行时间）
 ```
 
 | 包 | 文件 | 测试数 | 覆盖内容 |
 |---|------|--------|----------|
-| `internal/api` | `handler_test.go` | 89 | HTTP API 功能测试，覆盖 task 生命周期、pipeline 生命周期、流水线执行（成功/超时/跳过/失败继续/手动停止/续跑）、run 管理、状态管理、循环执行、数据清理、cron 验证、集成测试（重排执行、配置传播、状态转换） |
+| `internal/api` | `handler_test.go` | 92 | HTTP API 功能测试，覆盖 task 生命周期（含 llm-prompt 上传验证）、pipeline 生命周期、流水线执行（成功/超时/跳过/失败继续/手动停止/续跑）、run 管理、状态管理、循环执行、数据清理、cron 验证、集成测试（重排执行、配置传播、状态转换） |
 | `internal/runner` | `runner_test.go` | 23 | 执行器单元测试，task 元数据读写、run 信息、日志、超时重试、循环执行、PID 复用检测 |
 | `internal/runner` | `cleanup_test.go` | 9 | 运行数据清理：禁用/限制内/超出/多流水线/运行中跳过/混合状态/空目录 |
 | `internal/pipeline` | `pipeline_test.go` | 18 | Pipeline CRUD：重复 task、独立配置、索引移除、重排保留配置、边界情况、持久化、跨流水线隔离 |
+| `internal/task` | `task_test.go` | 4 | Task 描述符解析：llm-prompt 类型、self-contained 类型、无 type、缺失文件 |
 
 测试风格：纯 Go 标准库（`testing` + `net/http/httptest`），零外部断言框架。API 测试通过真实 HTTP 路由执行，使用真实 `task/pipeline/runner` Manager 全连线。
 

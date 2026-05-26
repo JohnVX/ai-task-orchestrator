@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ai-task-orchestrator/internal/agent"
 	"github.com/ai-task-orchestrator/internal/pipeline"
 	"github.com/ai-task-orchestrator/internal/runner"
 	"github.com/ai-task-orchestrator/internal/task"
@@ -35,7 +36,7 @@ func newTestHandler(t *testing.T) *Handler {
 	}
 	taskMgr := task.NewManager(filepath.Join(dataDir, "tasks"), filepath.Join(dataDir, "task_meta"), filepath.Join(dataDir, "pipelines"))
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	runMgr := runner.NewManager(filepath.Join(dataDir, "runs"), dataDir, taskMgr, logger)
+	runMgr := runner.NewManager(filepath.Join(dataDir, "runs"), dataDir, taskMgr, logger, agent.MustGet("claude-code"))
 	pipeMgr := pipeline.NewManager(filepath.Join(dataDir, "pipelines"), taskMgr, runMgr)
 	runMgr.SetPipelineStatusSetter(pipeMgr)
 	tmpl := template.Must(template.New("index").Parse(""))
@@ -285,6 +286,54 @@ func TestUploadTaskNotTar(t *testing.T) {
 	rr := httptest.NewRecorder()
 	h.Router().ServeHTTP(rr, req)
 	mustStatus(t, rr.Result(), 400)
+}
+
+func TestUploadLLMPromptTask(t *testing.T) {
+	h := newTestHandler(t)
+	path := makeTar(t, "llm-test", map[string]string{
+		"prompt.md":                 "Analyze this code.",
+		"for-task-orchestrator.txt": "type: llm-prompt",
+	})
+	resp := uploadTaskViaMultipart(t, h, path)
+	mustStatus(t, resp, 201)
+	m := decodeJSON[task.Meta](t, resp)
+	if m.Type != task.TypeLLMPrompt {
+		t.Fatalf("expected type %q, got %q", task.TypeLLMPrompt, m.Type)
+	}
+	if m.RunCommand != "" {
+		t.Fatalf("expected empty run_command for llm-prompt, got %q", m.RunCommand)
+	}
+	if m.StopCommand != "" {
+		t.Fatalf("expected empty stop_command for llm-prompt, got %q", m.StopCommand)
+	}
+}
+
+func TestUploadLLMPromptMissingPromptMD(t *testing.T) {
+	h := newTestHandler(t)
+	path := makeTar(t, "bad-llm", map[string]string{
+		"run.sh":                    "#!/bin/sh\necho hi\n",
+		"for-task-orchestrator.txt": "type: llm-prompt",
+	})
+	resp := uploadTaskViaMultipart(t, h, path)
+	mustStatus(t, resp, 400)
+	m := decodeMap(t, resp)
+	if !strings.Contains(m["error"].(string), "prompt.md") {
+		t.Fatalf("expected error about missing prompt.md, got: %v", m["error"])
+	}
+}
+
+func TestUploadLLMPromptUnknownType(t *testing.T) {
+	h := newTestHandler(t)
+	path := makeTar(t, "unknown-type", map[string]string{
+		"run.sh":                    "#!/bin/sh\necho hi\n",
+		"for-task-orchestrator.txt": "type: unknown-type",
+	})
+	resp := uploadTaskViaMultipart(t, h, path)
+	mustStatus(t, resp, 400)
+	m := decodeMap(t, resp)
+	if !strings.Contains(m["error"].(string), "unknown task type") {
+		t.Fatalf("expected error about unknown type, got: %v", m["error"])
+	}
 }
 
 func TestListTasks(t *testing.T) {
@@ -784,9 +833,9 @@ func TestSetInvalidOnTimeout(t *testing.T) {
 	mustAddTask(t, h, p.ID, "bad-action")
 
 	resp := doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
-		"action":      "set_task_config",
-		"task_index":  0,
-		"on_timeout":  "invalid_value",
+		"action":     "set_task_config",
+		"task_index": 0,
+		"on_timeout": "invalid_value",
 	})
 	mustStatus(t, resp, 400)
 }
@@ -1895,10 +1944,10 @@ func TestTaskConfigPropagatesToExecution(t *testing.T) {
 
 	// Set a short timeout (1s) so the task will definitely time out
 	doRequest(t, h, "PUT", "/api/tasks/config-prop", map[string]interface{}{
-		"run_command":      "./run.sh",
-		"timeout_enabled":  true,
-		"timeout_seconds":  1,
-		"on_timeout":       "skip",
+		"run_command":     "./run.sh",
+		"timeout_enabled": true,
+		"timeout_seconds": 1,
+		"on_timeout":      "skip",
 	})
 
 	p := createTestPipeline(t, h, "config-prop-pipe")
@@ -1914,10 +1963,10 @@ func TestTaskConfigPropagatesToExecution(t *testing.T) {
 
 	// Now update to a longer timeout (10s) — task should complete
 	doRequest(t, h, "PUT", "/api/tasks/config-prop", map[string]interface{}{
-		"run_command":      "./run.sh",
-		"timeout_enabled":  true,
-		"timeout_seconds":  10,
-		"on_timeout":       "fail",
+		"run_command":     "./run.sh",
+		"timeout_enabled": true,
+		"timeout_seconds": 10,
+		"on_timeout":      "fail",
 	})
 
 	_, instances2 := startAndWait(t, h, p.ID, 15*time.Second)

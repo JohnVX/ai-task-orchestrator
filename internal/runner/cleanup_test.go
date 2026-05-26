@@ -2,6 +2,7 @@ package runner
 
 import (
 	"fmt"
+	"github.com/ai-task-orchestrator/internal/agent"
 	"io"
 	"log/slog"
 	"os"
@@ -185,7 +186,7 @@ func setupCleanupManager(t *testing.T) *Manager {
 
 	taskMgr := task.NewManager(tasksDir, taskMetaDir, pipelinesDir)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return NewManager(runsDir, dataDir, taskMgr, logger)
+	return NewManager(runsDir, dataDir, taskMgr, logger, agent.MustGet("claude-code"))
 }
 
 // createRuns creates n run directories for the given pipeline, each with a

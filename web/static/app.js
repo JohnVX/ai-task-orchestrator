@@ -85,8 +85,14 @@ async function renderTaskList() {
     ul.innerHTML = '';
     tasks.forEach(t => {
       const li = document.createElement('li');
-      li.textContent = t.name;
-      li.dataset.taskName = t.name;
+      const nameSpan = document.createElement('span');
+      nameSpan.textContent = t.name;
+      li.appendChild(nameSpan);
+      const badge = document.createElement('span');
+      badge.className = 'task-type-badge ' + (t.type === 'llm-prompt' ? 'type-llm' : 'type-exe');
+      badge.textContent = t.type === 'llm-prompt' ? 'LLM' : 'EXE';
+      li.appendChild(badge);
+            li.dataset.taskName = t.name;
       li.addEventListener('click', () => showTaskDetail(t.name));
       ul.appendChild(li);
     });
@@ -385,6 +391,10 @@ function renderPipelineTasks(pipeline, tasks, runningTask, runningTaskIdx, highl
     const span = document.createElement('span');
     span.textContent = t.name;
     li.appendChild(span);
+    const badge = document.createElement('span');
+    badge.className = 'task-type-badge ' + (t.type === 'llm-prompt' ? 'type-llm' : 'type-exe');
+    badge.textContent = t.type === 'llm-prompt' ? 'LLM' : 'EXE';
+    li.appendChild(badge);
 
     li.dataset.taskName = t.name;
     li.dataset.taskIndex = idx;
@@ -694,8 +704,11 @@ async function showRunDetail(runId) {
       const color = inst.status === 'success' ? 'green' :
                     inst.status === 'failed' || inst.status === 'crashed' || inst.status === 'timeout' ? 'red' :
                     inst.status === 'running' ? 'blue' : '#888';
+      const taskMeta = window.taskMetas ? window.taskMetas[inst.task_name] : null;
+      const ttype = taskMeta ? taskMeta.type : "";
+      const badgeHtml = ttype === "llm-prompt" ? '<span class="task-type-badge type-llm">LLM</span> ' : '<span class="task-type-badge type-exe">EXE</span> ';
       html += '<li style="margin:4px 0;color:' + color + '">' +
-        inst.task_name + ' — ' + inst.status +
+        badgeHtml + inst.task_name + ' — ' + inst.status +
         (inst.exit_code !== 0 && inst.exit_code !== -1 ? ' (exit ' + inst.exit_code + ')' : '') +
         ' <button data-run="' + runId + '" data-task="' + inst.task_name + '" data-task-idx="' + inst.index + '" class="view-log-btn">日志</button>' +
         '</li>';
