@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -83,7 +84,7 @@ func main() {
 	tmpl := template.Must(template.New("index").Parse(indexHTML))
 	staticFS, _ := fs.Sub(staticFiles, "web/static")
 
-	h := api.NewHandler(taskMgr, pipelineMgr, runMgr, absDataDir, tmpl, http.FS(staticFS))
+	h := api.NewHandler(taskMgr, pipelineMgr, runMgr, absDataDir, tmpl, http.FS(staticFS), slogger)
 	if err := h.RecoverOnStartup(); err != nil {
 		slogger.Error("recovery failed", "error", err)
 		os.Exit(1)
@@ -92,7 +93,14 @@ func main() {
 	go runScheduler(pipelineMgr, runMgr, slogger)
 
 	addr := fmt.Sprintf(":%d", *port)
-	srv := &http.Server{Addr: addr, Handler: h.Router()}
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           requestLogger(slogger, h.Router()),
+		ReadTimeout:       60 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
 
 	go func() {
 		sigCh := make(chan os.Signal, 1)
@@ -176,4 +184,32 @@ func resolveLoopCount(lc *int) int {
 		return 1
 	}
 	return *lc
+}
+
+type responseWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (rw *responseWriter) WriteHeader(code int) {
+	rw.status = code
+	rw.ResponseWriter.WriteHeader(code)
+}
+
+func requestLogger(logger *slog.Logger, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rw := &responseWriter{ResponseWriter: w, status: 200}
+		t0 := time.Now()
+		next.ServeHTTP(rw, r)
+		dur := time.Since(t0)
+		if r.URL.Path != "/" && !strings.HasPrefix(r.URL.Path, "/static/") {
+			logger.Info("http request",
+				"method", r.Method,
+				"path", r.URL.Path,
+				"status", rw.status,
+				"duration_ms", dur.Milliseconds(),
+				"remote", r.RemoteAddr,
+			)
+		}
+	})
 }

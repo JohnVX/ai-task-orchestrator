@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"html/template"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -25,11 +26,12 @@ type Handler struct {
 	dataDir  string
 	tmpl     *template.Template
 	staticFS http.FileSystem
+	logger   *slog.Logger
 }
 
 // NewHandler creates a Handler.
-func NewHandler(tm *task.Manager, pm *pipeline.Manager, rm *runner.Manager, dataDir string, tmpl *template.Template, staticFS http.FileSystem) *Handler {
-	return &Handler{Task: tm, Pipeline: pm, Runner: rm, dataDir: dataDir, tmpl: tmpl, staticFS: staticFS}
+func NewHandler(tm *task.Manager, pm *pipeline.Manager, rm *runner.Manager, dataDir string, tmpl *template.Template, staticFS http.FileSystem, logger *slog.Logger) *Handler {
+	return &Handler{Task: tm, Pipeline: pm, Runner: rm, dataDir: dataDir, tmpl: tmpl, staticFS: staticFS, logger: logger}
 }
 
 // Router returns an http.Handler that serves all routes.
@@ -81,7 +83,10 @@ func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 	json.NewEncoder(w).Encode(v)
 }
 
-func writeError(w http.ResponseWriter, status int, msg string) {
+func (h *Handler) writeError(w http.ResponseWriter, status int, msg string) {
+	if status >= 500 {
+		h.logger.Error("request error", "status", status, "error", msg)
+	}
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
@@ -90,7 +95,7 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 func (h *Handler) handleListTasks(w http.ResponseWriter, r *http.Request) {
 	tasks, err := h.Task.All()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		h.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if tasks == nil {
@@ -103,19 +108,19 @@ func (h *Handler) handleUploadTask(w http.ResponseWriter, r *http.Request) {
 	r.ParseMultipartForm(50 << 20) // 50 MB max
 	file, header, err := r.FormFile("file")
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "missing file field")
+		h.writeError(w, http.StatusBadRequest, "missing file field")
 		return
 	}
 	defer file.Close()
 
 	if !strings.HasSuffix(header.Filename, ".tar") {
-		writeError(w, http.StatusBadRequest, "file must be a .tar archive")
+		h.writeError(w, http.StatusBadRequest, "file must be a .tar archive")
 		return
 	}
 
 	tmpDir, err := os.MkdirTemp("", "task-upload-")
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		h.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	defer os.RemoveAll(tmpDir)
@@ -123,21 +128,22 @@ func (h *Handler) handleUploadTask(w http.ResponseWriter, r *http.Request) {
 	tmpPath := filepath.Join(tmpDir, header.Filename)
 	out, err := os.Create(tmpPath)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		h.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if _, err := io.Copy(out, file); err != nil {
 		out.Close()
-		writeError(w, http.StatusInternalServerError, err.Error())
+		h.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	out.Close()
 
 	meta, err := h.Task.Upload(tmpPath)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		h.writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	h.logger.Info("task uploaded", "name", meta.Name)
 	writeJSON(w, http.StatusCreated, meta)
 }
 
@@ -145,7 +151,7 @@ func (h *Handler) handleGetTask(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	meta, err := h.Task.Get(name)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "task not found")
+		h.writeError(w, http.StatusNotFound, "task not found")
 		return
 	}
 	readme, _ := h.Task.ParseReadme(name)
@@ -167,11 +173,11 @@ func (h *Handler) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
 		RetryCount        int    `json:"retry_count"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON")
+		h.writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
 	if err := h.Task.SetConfig(name, body.RunCommand, body.StopCommand, body.TimeoutEnabled, body.TimeoutSeconds, body.OnTimeout, body.ContinueOnFailure, body.RetryCount); err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		h.writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -182,12 +188,13 @@ func (h *Handler) handleDeleteTask(w http.ResponseWriter, r *http.Request) {
 	if err := h.Task.Delete(name); err != nil {
 		msg := err.Error()
 		if strings.Contains(msg, "not found") {
-			writeError(w, http.StatusNotFound, msg)
+			h.writeError(w, http.StatusNotFound, msg)
 		} else {
-			writeError(w, http.StatusConflict, msg)
+			h.writeError(w, http.StatusConflict, msg)
 		}
 		return
 	}
+	h.logger.Info("task deleted", "name", name)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -197,9 +204,9 @@ func (h *Handler) handleDownloadTask(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		msg := err.Error()
 		if strings.Contains(msg, "not found") {
-			writeError(w, http.StatusNotFound, "task not found")
+			h.writeError(w, http.StatusNotFound, "task not found")
 		} else {
-			writeError(w, http.StatusInternalServerError, msg)
+			h.writeError(w, http.StatusInternalServerError, msg)
 		}
 		return
 	}
@@ -215,7 +222,7 @@ func (h *Handler) handleDownloadTask(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleListPipelines(w http.ResponseWriter, r *http.Request) {
 	pipelines, err := h.Pipeline.All()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		h.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if pipelines == nil {
@@ -232,18 +239,19 @@ func (h *Handler) handleCreatePipeline(w http.ResponseWriter, r *http.Request) {
 		LoopCount         *int    `json:"loop_count,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Name == "" {
-		writeError(w, http.StatusBadRequest, "pipeline name required")
+		h.writeError(w, http.StatusBadRequest, "pipeline name required")
 		return
 	}
 	if body.Schedule != "" && !runner.ValidCron(body.Schedule) {
-		writeError(w, http.StatusBadRequest, "invalid cron expression")
+		h.writeError(w, http.StatusBadRequest, "invalid cron expression")
 		return
 	}
 	p, err := h.Pipeline.Create(body.Name, body.Schedule, body.WebhookURL, body.LoopCount)
 	if err != nil {
-		writeError(w, http.StatusConflict, err.Error())
+		h.writeError(w, http.StatusConflict, err.Error())
 		return
 	}
+	h.logger.Info("pipeline created", "id", p.ID, "name", p.Name)
 	writeJSON(w, http.StatusCreated, p)
 }
 
@@ -251,7 +259,7 @@ func (h *Handler) handleGetPipeline(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	p, err := h.Pipeline.Get(id)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "pipeline not found")
+		h.writeError(w, http.StatusNotFound, "pipeline not found")
 		return
 	}
 
@@ -307,7 +315,7 @@ func (h *Handler) handleUpdatePipeline(w http.ResponseWriter, r *http.Request) {
 		RetryCount        *int     `json:"retry_count,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON")
+		h.writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
 
@@ -321,7 +329,7 @@ func (h *Handler) handleUpdatePipeline(w http.ResponseWriter, r *http.Request) {
 		err = h.Pipeline.ReorderTasks(id, body.TaskIndices)
 	case "set_schedule":
 		if body.Schedule != "" && !runner.ValidCron(body.Schedule) {
-			writeError(w, http.StatusBadRequest, "invalid cron expression")
+			h.writeError(w, http.StatusBadRequest, "invalid cron expression")
 			return
 		}
 		err = h.Pipeline.SetSchedule(id, body.Schedule)
@@ -332,12 +340,12 @@ func (h *Handler) handleUpdatePipeline(w http.ResponseWriter, r *http.Request) {
 	case "set_task_config":
 		err = h.Pipeline.SetTaskConfig(id, body.TaskIndex, body.TimeoutSeconds, body.OnTimeout, body.ContinueOnFailure, body.RetryCount)
 	default:
-		writeError(w, http.StatusBadRequest, "unknown action: "+body.Action)
+		h.writeError(w, http.StatusBadRequest, "unknown action: "+body.Action)
 		return
 	}
 
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		h.writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -348,12 +356,13 @@ func (h *Handler) handleDeletePipeline(w http.ResponseWriter, r *http.Request) {
 	if err := h.Pipeline.Delete(id); err != nil {
 		msg := err.Error()
 		if strings.Contains(msg, "not found") || strings.Contains(msg, "no such file") {
-			writeError(w, http.StatusNotFound, "pipeline not found")
+			h.writeError(w, http.StatusNotFound, "pipeline not found")
 		} else {
-			writeError(w, http.StatusConflict, msg)
+			h.writeError(w, http.StatusConflict, msg)
 		}
 		return
 	}
+	h.logger.Info("pipeline deleted", "id", id)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -361,11 +370,11 @@ func (h *Handler) handleStartPipeline(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	p, err := h.Pipeline.Get(id)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "pipeline not found")
+		h.writeError(w, http.StatusNotFound, "pipeline not found")
 		return
 	}
 	if len(p.Tasks) == 0 {
-		writeError(w, http.StatusBadRequest, "pipeline has no tasks")
+		h.writeError(w, http.StatusBadRequest, "pipeline has no tasks")
 		return
 	}
 	runTasks := make([]runner.RunTask, len(p.Tasks))
@@ -380,9 +389,10 @@ func (h *Handler) handleStartPipeline(w http.ResponseWriter, r *http.Request) {
 	}
 	runID, err := h.Runner.Start(id, runTasks, p.WebhookURL, p.Name, resolveLoopCount(p.LoopCount))
 	if err != nil {
-		writeError(w, http.StatusConflict, err.Error())
+		h.writeError(w, http.StatusConflict, err.Error())
 		return
 	}
+	h.logger.Info("pipeline started via API", "pipeline_id", id, "run_id", runID)
 	writeJSON(w, http.StatusOK, map[string]string{"run_id": runID})
 }
 
@@ -399,13 +409,14 @@ func (h *Handler) handleStopPipeline(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if !running {
-		writeError(w, http.StatusBadRequest, "pipeline is not running")
+		h.writeError(w, http.StatusBadRequest, "pipeline is not running")
 		return
 	}
 	if err := h.Runner.Stop(id); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		h.writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	h.logger.Info("pipeline stop requested", "pipeline_id", id)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 func (h *Handler) handleContinueRun(w http.ResponseWriter, r *http.Request) {
@@ -414,12 +425,12 @@ func (h *Handler) handleContinueRun(w http.ResponseWriter, r *http.Request) {
 		PipelineID string `json:"pipeline_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.PipelineID == "" {
-		writeError(w, http.StatusBadRequest, "pipeline_id required")
+		h.writeError(w, http.StatusBadRequest, "pipeline_id required")
 		return
 	}
 	p, err := h.Pipeline.Get(body.PipelineID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "pipeline not found")
+		h.writeError(w, http.StatusNotFound, "pipeline not found")
 		return
 	}
 	runTasks := make([]runner.RunTask, len(p.Tasks))
@@ -433,9 +444,10 @@ func (h *Handler) handleContinueRun(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := h.Runner.ContinueRun(body.PipelineID, runID, runTasks, p.WebhookURL, p.Name); err != nil {
-		writeError(w, http.StatusConflict, err.Error())
+		h.writeError(w, http.StatusConflict, err.Error())
 		return
 	}
+	h.logger.Info("run continued", "run_id", runID, "pipeline_id", body.PipelineID)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -499,18 +511,18 @@ func (h *Handler) handleGetRun(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("log") == "1" {
 		taskName := r.URL.Query().Get("task")
 		if taskName == "" {
-			writeError(w, http.StatusBadRequest, "task parameter required for logs")
+			h.writeError(w, http.StatusBadRequest, "task parameter required for logs")
 			return
 		}
 		taskIdxStr := r.URL.Query().Get("task_idx")
 		taskIdx, err := strconv.Atoi(taskIdxStr)
 		if taskIdxStr != "" && err != nil {
-			writeError(w, http.StatusBadRequest, "invalid task_idx parameter")
+			h.writeError(w, http.StatusBadRequest, "invalid task_idx parameter")
 			return
 		}
 		stdout, stderr, err := h.Runner.RunLog(id, taskName, taskIdx)
 		if err != nil {
-			writeError(w, http.StatusNotFound, err.Error())
+			h.writeError(w, http.StatusNotFound, err.Error())
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{
@@ -522,7 +534,7 @@ func (h *Handler) handleGetRun(w http.ResponseWriter, r *http.Request) {
 
 	instances, err := h.Runner.RunInfo(id)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "run not found")
+		h.writeError(w, http.StatusNotFound, "run not found")
 		return
 	}
 	if instances == nil {
@@ -535,7 +547,7 @@ func (h *Handler) handleGetRunEvents(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	content, err := h.Runner.RunEvents(id)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		h.writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
 	if content == "" {
@@ -554,13 +566,13 @@ func (h *Handler) handleDeleteRun(w http.ResponseWriter, r *http.Request) {
 	msg := err.Error()
 	switch {
 	case strings.Contains(msg, "not found"):
-		writeError(w, http.StatusNotFound, msg)
+		h.writeError(w, http.StatusNotFound, msg)
 	case strings.Contains(msg, "active run"):
-		writeError(w, http.StatusConflict, msg)
+		h.writeError(w, http.StatusConflict, msg)
 	case strings.Contains(msg, "invalid"):
-		writeError(w, http.StatusBadRequest, msg)
+		h.writeError(w, http.StatusBadRequest, msg)
 	default:
-		writeError(w, http.StatusInternalServerError, msg)
+		h.writeError(w, http.StatusInternalServerError, msg)
 	}
 }
 
@@ -569,7 +581,7 @@ func (h *Handler) handleDeleteRun(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleState(w http.ResponseWriter, r *http.Request) {
 	state, err := h.Runner.State()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		h.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if state == nil {

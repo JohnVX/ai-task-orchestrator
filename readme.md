@@ -46,9 +46,10 @@ go build -o ai-task-orchestrator .
 - **停止 = 失败**：手动停止流水线 → stop_command 执行 → 超时 10s 后 SIGKILL 强杀 → 标记当前 task failed → 链上后续不触发。
 - **续跑（从失败点继续）**：流水线因 task 失败/timeout/手动停止中断后，可从断点处继续执行。重跑失败的 task，后续 task 依次执行。同一 run 目录复用，不覆盖已有日志。前端 task 标红指示中断位置。循环执行时续跑会保持当前迭代位置（如循环 3 次在第 2 次停止，续跑后从第 2 次继续而非重新开始）。
 - **上游数据自理**：第一个 task 的输入由 task 自身解决，ai-task-orchestrator 不提供初始输入机制。
-- **多实例隔离**：不同 `-data` 目录的多个进程完全独立，互不干扰；同一 data 目录同时只允许一个进程，后启动的会检测 PID 冲突并拒绝启动。
+- **多实例隔离**：不同 `-data` 目录的多个进程完全独立，互不干扰；同一 data 目录同时只允许一个进程，后启动的会检测 PID 冲突并拒绝启动。通过比较进程启动时间（`/proc/[pid]/stat` 的 starttime）防止 PID 复用误判。
 - **定时执行**：创建 pipeline 时可指定 cron 表达式（5 字段标准格式），由后台调度器每 30 秒检查一次触发条件。同一条 pipeline 每分钟最多触发一次，正在运行时跳过。重启后不追补离线期间遗漏的执行。
 - **安全**：上传的 tar 包在解包时拦截路径穿越攻击（`../` 和绝对路径），仅提取安全路径。
+- **HTTP 超时保护**：HTTP Server 配置了 ReadTimeout/WriteTimeout (60s)、IdleTimeout (120s)、ReadHeaderTimeout (10s)，防止慢客户端占用连接资源。
 - **优雅关闭**：SIGINT/SIGTERM 触发优雅关闭，先停止所有运行中的流水线，再退出 HTTP 服务（超时 30 秒）。
 
 ## 目录与存储结构
@@ -394,13 +395,13 @@ web/
 ## 测试
 
 ```bash
-go test ./... -count=1   # 全部 117 个测试（~13s + ~78s 执行时间）   
+go test ./... -count=1   # 全部 139 个测试（~15s + ~100s 执行时间）
 ```
 
 | 包 | 文件 | 测试数 | 覆盖内容 |
 |---|------|--------|----------|
-| `internal/api` | `handler_test.go` | 64 | HTTP API 功能测试，覆盖 task 生命周期、pipeline 生命周期、流水线执行（成功/超时/跳过/失败继续/手动停止/续跑）、run 管理、状态管理、循环执行、数据清理、cron 验证 |
-| `internal/runner` | `runner_test.go` | 17 | 执行器单元测试，task 元数据读写、run 信息、日志、超时重试、循环执行 |
+| `internal/api` | `handler_test.go` | 89 | HTTP API 功能测试，覆盖 task 生命周期、pipeline 生命周期、流水线执行（成功/超时/跳过/失败继续/手动停止/续跑）、run 管理、状态管理、循环执行、数据清理、cron 验证、集成测试（重排执行、配置传播、状态转换） |
+| `internal/runner` | `runner_test.go` | 23 | 执行器单元测试，task 元数据读写、run 信息、日志、超时重试、循环执行、PID 复用检测 |
 | `internal/runner` | `cleanup_test.go` | 9 | 运行数据清理：禁用/限制内/超出/多流水线/运行中跳过/混合状态/空目录 |
 | `internal/pipeline` | `pipeline_test.go` | 18 | Pipeline CRUD：重复 task、独立配置、索引移除、重排保留配置、边界情况、持久化、跨流水线隔离 |
 
@@ -408,7 +409,7 @@ go test ./... -count=1   # 全部 117 个测试（~13s + ~78s 执行时间）
 
 ## 日志
 
-- **结构化日志**：`log/slog` Text 格式，同时输出 stderr 和 `data/orchestrator.log`，支持 `--log-level` 控制级别。
+- **结构化日志**：`log/slog` Text 格式，同时输出 stderr 和 `data/orchestrator.log`，支持 `--log-level` 控制级别。HTTP 请求日志中间件记录每个 API 请求的 method/path/status/duration/remote。
 - **日志轮转**：启动时 + 每 24h 定时轮转：超过 7 天的未压缩日志 gzip 压缩，超过 365 天的 `.gz` 删除。
 - **日志查看器**：界面上查看任务 stdout/stderr 和 run 事件日志，支持手动刷新和 60 秒自动刷新（默认关闭）。
 

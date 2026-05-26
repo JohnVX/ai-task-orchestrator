@@ -871,3 +871,31 @@ func TestStopAllStopsRunningPipelines(t *testing.T) {
 		}
 	}
 }
+
+func TestProcessStartTimeSelf(t *testing.T) {
+	v := processStartTime(os.Getpid())
+	if v == 0 {
+		t.Fatal("processStartTime should return non-zero for current process")
+	}
+}
+
+func TestProcessStartTimeInit(t *testing.T) {
+	v := processStartTime(1)
+	if v == 0 {
+		t.Fatal("processStartTime should return non-zero for PID 1 (init)")
+	}
+}
+
+func TestProcessStartTimeInvalidPID(t *testing.T) {
+	v := processStartTime(99999999)
+	if v != 0 {
+		t.Fatalf("processStartTime should return 0 for invalid PID, got %d", v)
+	}
+}
+
+func TestProcessStartTimeNegativePID(t *testing.T) {
+	v := processStartTime(-1)
+	if v != 0 {
+		t.Fatalf("processStartTime should return 0 for negative PID, got %d", v)
+	}
+}

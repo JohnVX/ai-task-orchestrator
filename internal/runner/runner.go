@@ -64,9 +64,11 @@ type PipelineRunState struct {
 
 // OrchestratorState is the global state persisted to orchestrator_state.json.
 // When PID is non-zero it acts as a single-instance lock. RunningPipelines
-// tracks all currently executing pipelines for crash recovery.
+// tracks all currently executing pipelines for crash recovery. StartTime is
+// the process start time in clock ticks since boot, used to detect PID reuse.
 type OrchestratorState struct {
 	PID              int                `json:"pid"`
+	StartTime        uint64             `json:"start_time"`
 	RunningPipelines []PipelineRunState `json:"running_pipelines"`
 }
 
@@ -235,6 +237,7 @@ func (m *Manager) Start(pipelineID string, tasks []RunTask, webhookURL string, p
 	state, _ := m.readState()
 	if state.PID == 0 {
 		state.PID = os.Getpid()
+		state.StartTime = processStartTime(os.Getpid())
 	}
 	state.RunningPipelines = append(state.RunningPipelines, PipelineRunState{
 			Iteration:    1,
@@ -315,6 +318,7 @@ func (m *Manager) ContinueRun(pipelineID, runID string, tasks []RunTask, webhook
 	state, _ := m.readState()
 	if state.PID == 0 {
 		state.PID = os.Getpid()
+		state.StartTime = processStartTime(os.Getpid())
 	}
 	state.RunningPipelines = append(state.RunningPipelines, PipelineRunState{
 			Iteration:    stoppedIteration,
@@ -770,7 +774,14 @@ func (m *Manager) RunLog(runID, taskName string, taskIdx int) (stdout, stderr st
 
 // RunEvents returns the content of the per-run events log.
 func (m *Manager) RunEvents(runID string) (string, error) {
-	data, err := os.ReadFile(filepath.Join(m.runsDir, runID, "events.log"))
+	runDir := filepath.Join(m.runsDir, runID)
+	if _, err := os.Stat(runDir); err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("run %q not found", runID)
+		}
+		return "", err
+	}
+	data, err := os.ReadFile(filepath.Join(runDir, "events.log"))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return "", nil
@@ -851,7 +862,9 @@ func (m *Manager) DeleteRuns(pipelineID string) error {
 		instances, _ := m.RunInfo(e.Name())
 		for _, inst := range instances {
 			if inst.PipelineID == pipelineID {
-				os.RemoveAll(runDir)
+				if err := os.RemoveAll(runDir); err != nil {
+					m.logger.Warn("delete runs: remove dir failed", "run_dir", runDir, "error", err)
+				}
 				break
 			}
 		}
@@ -1017,6 +1030,12 @@ func (m *Manager) RecoverOnStartup() error {
 	}
 
 	alive := pidAlive(state.PID)
+	if alive && state.StartTime > 0 {
+		actualStart := processStartTime(state.PID)
+		if actualStart != state.StartTime {
+			alive = false // PID reused by a different process
+		}
+	}
 	if alive {
 		return fmt.Errorf("another orchestrator instance is running (PID %d)", state.PID)
 	}
@@ -1097,4 +1116,26 @@ func pidAlive(pid int) bool {
 	}
 	err = process.Signal(syscall.Signal(0))
 	return err == nil
+}
+
+// processStartTime reads the process start time (field 22) from /proc/[pid]/stat.
+// Returns the value in clock ticks since boot, or 0 on error.
+func processStartTime(pid int) uint64 {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return 0
+	}
+	s := string(data)
+	// comm is the second field and may contain spaces and parens.
+	// Find the last ')' to locate the end of the comm field.
+	lastParen := strings.LastIndex(s, ")")
+	if lastParen < 0 {
+		return 0
+	}
+	fields := strings.Fields(s[lastParen+2:])
+	if len(fields) < 20 {
+		return 0
+	}
+	v, _ := strconv.ParseUint(fields[19], 10, 64)
+	return v
 }

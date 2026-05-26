@@ -39,7 +39,7 @@ func newTestHandler(t *testing.T) *Handler {
 	pipeMgr := pipeline.NewManager(filepath.Join(dataDir, "pipelines"), taskMgr, runMgr)
 	runMgr.SetPipelineStatusSetter(pipeMgr)
 	tmpl := template.Must(template.New("index").Parse(""))
-	return NewHandler(taskMgr, pipeMgr, runMgr, dataDir, tmpl, http.Dir(dir))
+	return NewHandler(taskMgr, pipeMgr, runMgr, dataDir, tmpl, http.Dir(dir), logger)
 }
 
 func makeTar(t *testing.T, name string, files map[string]string) string {
@@ -1817,5 +1817,192 @@ func TestGetRunLogsInvalidTaskIdx(t *testing.T) {
 	if resp.StatusCode != 400 {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("expected 400 for invalid task_idx, got %d: %s", resp.StatusCode, body)
+	}
+}
+
+func TestGetRunEventsNonExistent(t *testing.T) {
+	h := newTestHandler(t)
+	resp := doRequest(t, h, "GET", "/api/runs/run-nonexist-000001/events", nil)
+	mustStatus(t, resp, 404)
+}
+
+func TestDeleteRunInvalidID(t *testing.T) {
+	h := newTestHandler(t)
+	resp := doRequest(t, h, "DELETE", "/api/runs/not-a-run-id", nil)
+	mustStatus(t, resp, 400)
+	m := decodeMap(t, resp)
+	if !strings.Contains(m["error"].(string), "invalid") {
+		t.Fatalf("expected invalid run id error, got: %v", m["error"])
+	}
+}
+
+func TestDeleteRunNonExistent(t *testing.T) {
+	h := newTestHandler(t)
+	resp := doRequest(t, h, "DELETE", "/api/runs/run-nonexist-000001", nil)
+	mustStatus(t, resp, 404)
+	m := decodeMap(t, resp)
+	if !strings.Contains(m["error"].(string), "not found") {
+		t.Fatalf("expected not found error, got: %v", m["error"])
+	}
+}
+
+func TestGetRunInfoNonExistent(t *testing.T) {
+	h := newTestHandler(t)
+	resp := doRequest(t, h, "GET", "/api/runs/run-nonexist-000001", nil)
+	mustStatus(t, resp, 404)
+}
+
+// ===== Integration: state transition & cross-component tests =====
+
+func TestPipelineReorderAffectsExecution(t *testing.T) {
+	h := newTestHandler(t)
+	createTestTask(t, h, "task-order-1", "#!/bin/sh\necho 'task1'\n")
+	createTestTask(t, h, "task-order-2", "#!/bin/sh\necho 'task2'\n")
+	createTestTask(t, h, "task-order-3", "#!/bin/sh\necho 'task3'\n")
+
+	p := createTestPipeline(t, h, "order-pipe")
+	mustAddTask(t, h, p.ID, "task-order-1")
+	mustAddTask(t, h, p.ID, "task-order-2")
+	mustAddTask(t, h, p.ID, "task-order-3")
+
+	// Reorder: reverse the order to [3,2,1]
+	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
+		"action":       "reorder",
+		"task_indices": []int{2, 1, 0},
+	})
+
+	runID, instances := startAndWait(t, h, p.ID, 10*time.Second)
+	_ = runID
+
+	if len(instances) != 3 {
+		t.Fatalf("expected 3 instances, got %d", len(instances))
+	}
+	// After reorder [2,1,0]: task-order-3 (index 2) first, task-order-2 (index 1) second, task-order-1 (index 0) third
+	expectedOrder := []string{"task-order-3", "task-order-2", "task-order-1"}
+	for i, inst := range instances {
+		if inst.TaskName != expectedOrder[i] {
+			t.Fatalf("position %d: expected %s, got %s", i, expectedOrder[i], inst.TaskName)
+		}
+		if inst.Status != "success" {
+			t.Fatalf("position %d: expected success, got %s", i, inst.Status)
+		}
+	}
+}
+
+func TestTaskConfigPropagatesToExecution(t *testing.T) {
+	h := newTestHandler(t)
+	createTestTask(t, h, "config-prop", "#!/bin/sh\nsleep 3\necho done\n")
+
+	// Set a short timeout (1s) so the task will definitely time out
+	doRequest(t, h, "PUT", "/api/tasks/config-prop", map[string]interface{}{
+		"run_command":      "./run.sh",
+		"timeout_enabled":  true,
+		"timeout_seconds":  1,
+		"on_timeout":       "skip",
+	})
+
+	p := createTestPipeline(t, h, "config-prop-pipe")
+	mustAddTask(t, h, p.ID, "config-prop")
+
+	_, instances := startAndWait(t, h, p.ID, 15*time.Second)
+	if len(instances) != 1 {
+		t.Fatalf("expected 1 instance, got %d", len(instances))
+	}
+	if instances[0].Status != "timeout" {
+		t.Fatalf("expected timeout status with 1s timeout on 3s sleep, got %s", instances[0].Status)
+	}
+
+	// Now update to a longer timeout (10s) — task should complete
+	doRequest(t, h, "PUT", "/api/tasks/config-prop", map[string]interface{}{
+		"run_command":      "./run.sh",
+		"timeout_enabled":  true,
+		"timeout_seconds":  10,
+		"on_timeout":       "fail",
+	})
+
+	_, instances2 := startAndWait(t, h, p.ID, 15*time.Second)
+	if len(instances2) != 1 {
+		t.Fatalf("expected 1 instance, got %d", len(instances2))
+	}
+	if instances2[0].Status != "success" {
+		t.Fatalf("expected success with 10s timeout on 3s sleep, got %s", instances2[0].Status)
+	}
+}
+
+func TestDeletePipelineCleansUpRuns(t *testing.T) {
+	h := newTestHandler(t)
+	createTestTask(t, h, "cleanup-run", "#!/bin/sh\necho cleanup\n")
+	p := createTestPipeline(t, h, "cleanup-run-pipe")
+	mustAddTask(t, h, p.ID, "cleanup-run")
+
+	runID, _ := startAndWait(t, h, p.ID, 10*time.Second)
+
+	// Verify both pipeline and run exist
+	resp := doRequest(t, h, "GET", "/api/pipelines/"+p.ID, nil)
+	mustStatus(t, resp, 200)
+	resp = doRequest(t, h, "GET", "/api/runs/"+runID, nil)
+	mustStatus(t, resp, 200)
+
+	// Delete pipeline — should also clean up associated runs
+	resp = doRequest(t, h, "DELETE", "/api/pipelines/"+p.ID, nil)
+	mustStatus(t, resp, 200)
+
+	// Verify pipeline is gone
+	resp = doRequest(t, h, "GET", "/api/pipelines/"+p.ID, nil)
+	mustStatus(t, resp, 404)
+
+	// Verify run is also cleaned up
+	resp = doRequest(t, h, "GET", "/api/runs/"+runID, nil)
+	mustStatus(t, resp, 404)
+}
+
+func TestFullLifecycleStateTransitions(t *testing.T) {
+	h := newTestHandler(t)
+
+	// 1. Idle state
+	resp := doRequest(t, h, "GET", "/api/state", nil)
+	mustStatus(t, resp, 200)
+	s := decodeJSON[runner.OrchestratorState](t, resp)
+	if len(s.RunningPipelines) != 0 {
+		t.Fatalf("initial state should have 0 running pipelines, got %d", len(s.RunningPipelines))
+	}
+
+	// 2. Create and start
+	createTestTask(t, h, "lifecycle-task", "#!/bin/sh\nsleep 2\necho life\n")
+	p := createTestPipeline(t, h, "lifecycle-pipe")
+	mustAddTask(t, h, p.ID, "lifecycle-task")
+
+	doRequest(t, h, "POST", "/api/pipelines/"+p.ID+"/start", nil)
+	time.Sleep(200 * time.Millisecond)
+
+	// 3. Verify running state
+	resp = doRequest(t, h, "GET", "/api/state", nil)
+	mustStatus(t, resp, 200)
+	s = decodeJSON[runner.OrchestratorState](t, resp)
+	found := false
+	for _, rp := range s.RunningPipelines {
+		if rp.PipelineID == p.ID {
+			found = true
+			if rp.CurrentTask != "lifecycle-task" {
+				t.Fatalf("expected current task lifecycle-task, got %s", rp.CurrentTask)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Fatal("pipeline should be in running state")
+	}
+
+	// 4. Wait for completion
+	waitForPipelineDone(t, h, p.ID, 10*time.Second)
+
+	// 5. Verify idle state returned
+	resp = doRequest(t, h, "GET", "/api/state", nil)
+	mustStatus(t, resp, 200)
+	s = decodeJSON[runner.OrchestratorState](t, resp)
+	for _, rp := range s.RunningPipelines {
+		if rp.PipelineID == p.ID {
+			t.Fatal("pipeline should no longer be in state after completion")
+		}
 	}
 }
