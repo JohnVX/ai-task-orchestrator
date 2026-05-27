@@ -373,7 +373,7 @@ func (m *Manager) ContinueRun(pipelineID, runID string, tasks []RunTask, webhook
 		hasFailure := false
 		for _, st := range stage.tasks {
 			status, ok := taskStatus[st.index]
-			if !ok || (status != TaskStatusSuccess && status != TaskStatusPending) {
+			if !ok || status != TaskStatusSuccess {
 				hasFailure = true
 				break
 			}

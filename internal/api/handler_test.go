@@ -2066,7 +2066,7 @@ func TestSetTaskStage(t *testing.T) {
 
 	// Set stage
 	resp := doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
-		"action":     "set_task_stage",
+		"action":     "set_task_config",
 		"task_index": 0,
 		"stage":      "build",
 	})
@@ -2088,7 +2088,7 @@ func TestSetTaskStage(t *testing.T) {
 
 	// Clear stage
 	resp3 := doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
-		"action":     "set_task_stage",
+		"action":     "set_task_config",
 		"task_index": 0,
 		"stage":      "",
 	})
@@ -2101,7 +2101,7 @@ func TestSetTaskStage(t *testing.T) {
 
 	// Invalid index
 	resp4 := doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
-		"action":     "set_task_stage",
+		"action":     "set_task_config",
 		"task_index": 99,
 		"stage":      "x",
 	})
@@ -2121,10 +2121,10 @@ func TestParallelStageExecution(t *testing.T) {
 
 	// Set stage "build" for first two tasks
 	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
-		"action": "set_task_stage", "task_index": 0, "stage": "build",
+		"action": "set_task_config", "task_index": 0, "stage": "build",
 	})
 	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
-		"action": "set_task_stage", "task_index": 1, "stage": "build",
+		"action": "set_task_config", "task_index": 1, "stage": "build",
 	})
 
 	_, instances := startAndWait(t, h, p.ID, 15*time.Second)
@@ -2169,10 +2169,10 @@ func TestStageContinueOnFailure(t *testing.T) {
 	mustAddTask(t, h, p.ID, "scf-c")
 
 	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
-		"action": "set_task_stage", "task_index": 0, "stage": "build",
+		"action": "set_task_config", "task_index": 0, "stage": "build",
 	})
 	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
-		"action": "set_task_stage", "task_index": 1, "stage": "build",
+		"action": "set_task_config", "task_index": 1, "stage": "build",
 	})
 	// Set continue_on_failure for scf-b
 	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
@@ -2207,10 +2207,10 @@ func TestStageStopOnFailure(t *testing.T) {
 	mustAddTask(t, h, p.ID, "ssf-c")
 
 	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
-		"action": "set_task_stage", "task_index": 0, "stage": "build",
+		"action": "set_task_config", "task_index": 0, "stage": "build",
 	})
 	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
-		"action": "set_task_stage", "task_index": 1, "stage": "build",
+		"action": "set_task_config", "task_index": 1, "stage": "build",
 	})
 	// NO continue_on_failure → pipeline stops
 
@@ -2266,10 +2266,10 @@ func TestStopDuringParallelStage(t *testing.T) {
 	mustAddTask(t, h, p.ID, "stop-b")
 
 	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
-		"action": "set_task_stage", "task_index": 0, "stage": "stop-stage",
+		"action": "set_task_config", "task_index": 0, "stage": "stop-stage",
 	})
 	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
-		"action": "set_task_stage", "task_index": 1, "stage": "stop-stage",
+		"action": "set_task_config", "task_index": 1, "stage": "stop-stage",
 	})
 
 	resp := doRequest(t, h, "POST", "/api/pipelines/"+p.ID+"/start", nil)
@@ -2322,10 +2322,10 @@ func TestContinueRunPartialStage(t *testing.T) {
 	mustAddTask(t, h, p.ID, "cr-b")
 
 	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
-		"action": "set_task_stage", "task_index": 0, "stage": "deploy",
+		"action": "set_task_config", "task_index": 0, "stage": "deploy",
 	})
 	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
-		"action": "set_task_stage", "task_index": 1, "stage": "deploy",
+		"action": "set_task_config", "task_index": 1, "stage": "deploy",
 	})
 	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
 		"action": "set_task_config", "task_index": 1,
@@ -2380,6 +2380,85 @@ func TestContinueRunPartialStage(t *testing.T) {
 	}
 }
 
+func TestContinueRunResumesPendingStage(t *testing.T) {
+	h := newTestHandler(t)
+	createTestTask(t, h, "ctp-a", "#!/bin/sh\necho a\n")
+	createTestTask(t, h, "ctp-b", "#!/bin/sh\nsleep 5\necho b\n")
+
+	p := createTestPipeline(t, h, "ctp-pipe")
+	mustAddTask(t, h, p.ID, "ctp-a")
+	mustAddTask(t, h, p.ID, "ctp-b")
+
+	// Stage A: ctp-a, Stage B: ctp-b (standalone)
+	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
+		"action": "set_task_config", "task_index": 0, "stage": "first",
+	})
+
+	// Start pipeline
+	resp := doRequest(t, h, "POST", "/api/pipelines/"+p.ID+"/start", nil)
+	mustStatus(t, resp, 200)
+	runID := decodeMap(t, resp)["run_id"].(string)
+
+	// Wait for stage A to complete, then stop
+	time.Sleep(500 * time.Millisecond)
+	doRequest(t, h, "POST", "/api/pipelines/"+p.ID+"/stop", nil)
+	mustStatus(t, resp, 200)
+
+	// Wait for pipeline to become idle
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		s := decodeJSON[runner.OrchestratorState](t, doRequest(t, h, "GET", "/api/state", nil))
+		running := false
+		for _, rp := range s.RunningPipelines {
+			if rp.PipelineID == p.ID { running = true; break }
+		}
+		if !running { break }
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	// Verify: ctp-a succeeded, ctp-b is pending (never ran)
+	instances := decodeJSON[[]runner.TaskInstance](t, doRequest(t, h, "GET", "/api/runs/"+runID, nil))
+	if len(instances) < 2 {
+		t.Fatalf("expected 2 instances, got %d", len(instances))
+	}
+	if instances[0].Status != "success" {
+		t.Fatalf("ctp-a: expected success, got %s", instances[0].Status)
+	}
+	if instances[1].Status == "success" {
+		t.Fatal("ctp-b should not have succeeded (pipeline was stopped)")
+	}
+
+	// ContinueRun — must NOT skip pending stage B
+	resp2 := doRequest(t, h, "POST", "/api/runs/"+runID+"/continue", map[string]interface{}{
+		"pipeline_id": p.ID,
+	})
+	mustStatus(t, resp2, 200)
+
+	// Wait for completion
+	deadline2 := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline2) {
+		s := decodeJSON[runner.OrchestratorState](t, doRequest(t, h, "GET", "/api/state", nil))
+		running := false
+		for _, rp := range s.RunningPipelines {
+			if rp.PipelineID == p.ID { running = true; break }
+		}
+		if !running { break }
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	// Verify ctp-b was re-run (should now be success)
+	newInstances := decodeJSON[[]runner.TaskInstance](t, doRequest(t, h, "GET", "/api/runs/"+runID, nil))
+	if len(newInstances) < 2 {
+		t.Fatalf("expected at least 2 instances after continue, got %d", len(newInstances))
+	}
+	if newInstances[0].Status != "success" {
+		t.Fatalf("ctp-a should remain success, got %s", newInstances[0].Status)
+	}
+	if newInstances[1].Status != "success" {
+		t.Fatalf("ctp-b should be success after continue (was pending), got %s", newInstances[1].Status)
+	}
+}
+
 
 func TestLoopWithStages(t *testing.T) {
 	h := newTestHandler(t)
@@ -2390,10 +2469,10 @@ func TestLoopWithStages(t *testing.T) {
 	mustAddTask(t, h, p.ID, "loop-a")
 	mustAddTask(t, h, p.ID, "loop-b")
 	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
-		"action": "set_task_stage", "task_index": 0, "stage": "s",
+		"action": "set_task_config", "task_index": 0, "stage": "s",
 	})
 	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
-		"action": "set_task_stage", "task_index": 1, "stage": "s",
+		"action": "set_task_config", "task_index": 1, "stage": "s",
 	})
 	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
 		"action": "set_loop", "loop_count": 2,
@@ -2478,10 +2557,10 @@ func TestSetTasksPreservesStage(t *testing.T) {
 	mustAddTask(t, h, p.ID, "stg-y")
 
 	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
-		"action": "set_task_stage", "task_index": 0, "stage": "build",
+		"action": "set_task_config", "task_index": 0, "stage": "build",
 	})
 	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
-		"action": "set_task_stage", "task_index": 1, "stage": "deploy",
+		"action": "set_task_config", "task_index": 1, "stage": "deploy",
 	})
 
 	resp := doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
@@ -2566,13 +2645,13 @@ func TestRemoveTaskMaintainsRemainingStages(t *testing.T) {
 	mustAddTask(t, h, p.ID, "rm-c")
 
 	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
-		"action": "set_task_stage", "task_index": 0, "stage": "init",
+		"action": "set_task_config", "task_index": 0, "stage": "init",
 	})
 	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
-		"action": "set_task_stage", "task_index": 1, "stage": "work",
+		"action": "set_task_config", "task_index": 1, "stage": "work",
 	})
 	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
-		"action": "set_task_stage", "task_index": 2, "stage": "work",
+		"action": "set_task_config", "task_index": 2, "stage": "work",
 	})
 
 	// Remove middle task (idx=1)
@@ -2608,16 +2687,16 @@ func TestComputeStagesAfterReorder(t *testing.T) {
 	mustAddTask(t, h, p.ID, "cr-d")
 
 	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
-		"action": "set_task_stage", "task_index": 0, "stage": "init",
+		"action": "set_task_config", "task_index": 0, "stage": "init",
 	})
 	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
-		"action": "set_task_stage", "task_index": 1, "stage": "build",
+		"action": "set_task_config", "task_index": 1, "stage": "build",
 	})
 	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
-		"action": "set_task_stage", "task_index": 2, "stage": "build",
+		"action": "set_task_config", "task_index": 2, "stage": "build",
 	})
 	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
-		"action": "set_task_stage", "task_index": 3, "stage": "deploy",
+		"action": "set_task_config", "task_index": 3, "stage": "deploy",
 	})
 
 	// Reorder: move cr-d between cr-a and cr-b, breaking "build" adjacency

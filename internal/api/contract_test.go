@@ -148,7 +148,7 @@ func TestContractPipelineDetail(t *testing.T) {
 	mustAddTask(t, h, p.ID, "ct-pd-a")
 	mustAddTask(t, h, p.ID, "ct-pd-b")
 	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
-		"action": "set_task_stage", "task_index": 0, "stage": "build",
+		"action": "set_task_config", "task_index": 0, "stage": "build",
 	})
 	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
 		"action": "set_schedule", "schedule": "*/5 * * * *",
@@ -364,10 +364,10 @@ func TestContractRunningStateDuringParallelStage(t *testing.T) {
 	mustAddTask(t, h, p.ID, "cs-slow")
 	mustAddTask(t, h, p.ID, "cs-fast")
 	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
-		"action": "set_task_stage", "task_index": 0, "stage": "parallel",
+		"action": "set_task_config", "task_index": 0, "stage": "parallel",
 	})
 	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
-		"action": "set_task_stage", "task_index": 1, "stage": "parallel",
+		"action": "set_task_config", "task_index": 1, "stage": "parallel",
 	})
 
 	resp := doRequest(t, h, "POST", "/api/pipelines/"+p.ID+"/start", nil)

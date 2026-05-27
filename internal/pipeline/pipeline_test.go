@@ -91,7 +91,7 @@ func TestIndependentConfigsOnDuplicateTasks(t *testing.T) {
 	for _, cfg := range configs {
 		tSec := cfg.timeout
 		tAction := cfg.action
-		if err := mgr.SetTaskConfig(p.ID, cfg.idx, &tSec, &tAction, nil, nil); err != nil {
+		if err := mgr.SetTaskConfig(p.ID, cfg.idx, &tSec, &tAction, nil, nil, nil); err != nil {
 			t.Fatalf("SetTaskConfig(idx=%d): %v", cfg.idx, err)
 		}
 	}
@@ -126,7 +126,7 @@ func TestRemoveTaskByIndexFirst(t *testing.T) {
 		if i%2 == 1 {
 			act = "skip"
 		}
-		mgr.SetTaskConfig(p.ID, i, &sec, &act, nil, nil)
+		mgr.SetTaskConfig(p.ID, i, &sec, &act, nil, nil, nil)
 	}
 
 	// Remove first task (index 0 = task-A with timeout 10)
@@ -227,7 +227,7 @@ func TestReorderPreservesConfigs(t *testing.T) {
 	// Set unique configs
 	secs := []int{10, 20, 30}
 	for i, s := range secs {
-		mgr.SetTaskConfig(p.ID, i, &s, nil, nil, nil)
+		mgr.SetTaskConfig(p.ID, i, &s, nil, nil, nil, nil)
 	}
 
 	// Reorder: C, A, B → indices [2, 0, 1]
@@ -264,7 +264,7 @@ func TestReorderWithDuplicates(t *testing.T) {
 	// Set configs: A(10), A(20), B(30), B(40)
 	for i := 0; i < 4; i++ {
 		sec := (i + 1) * 10
-		mgr.SetTaskConfig(p.ID, i, &sec, nil, nil, nil)
+		mgr.SetTaskConfig(p.ID, i, &sec, nil, nil, nil, nil)
 	}
 
 	// Reorder to: B(40), A(10), B(30), A(20) → indices [3, 0, 2, 1]
@@ -338,7 +338,7 @@ func TestSetTaskConfigOutOfBounds(t *testing.T) {
 	tests := []int{-1, 2, 5}
 	for _, idx := range tests {
 		sec := 30
-		if err := mgr.SetTaskConfig(p.ID, idx, &sec, nil, nil, nil); err == nil {
+		if err := mgr.SetTaskConfig(p.ID, idx, &sec, nil, nil, nil, nil); err == nil {
 			t.Fatalf("expected error for SetTaskConfig index %d", idx)
 		}
 	}
@@ -350,8 +350,34 @@ func TestSetTaskConfigInvalidOnTimeout(t *testing.T) {
 	mustAdd(t, mgr, p.ID, "A")
 
 	bad := "invalid"
-	if err := mgr.SetTaskConfig(p.ID, 0, nil, &bad, nil, nil); err == nil {
+	if err := mgr.SetTaskConfig(p.ID, 0, nil, &bad, nil, nil, nil); err == nil {
 		t.Fatal("expected error for invalid on_timeout value")
+	}
+}
+
+func TestSetTaskConfigStageValidation(t *testing.T) {
+	mgr := newTestManager(t)
+	p := mustCreate(t, mgr, "stage-val", "")
+	mustAdd(t, mgr, p.ID, "A")
+
+	// Valid stage names
+	for _, valid := range []string{"build", "BUILD", "a-b", "a_b", "Ab-CD_eF"} {
+		s := valid
+		if err := mgr.SetTaskConfig(p.ID, 0, nil, nil, nil, nil, &s); err != nil {
+			t.Fatalf("expected stage %q to be valid, got: %v", valid, err)
+		}
+	}
+	// Clear stage with empty string
+	empty := ""
+	if err := mgr.SetTaskConfig(p.ID, 0, nil, nil, nil, nil, &empty); err != nil {
+		t.Fatalf("expected empty stage to clear, got: %v", err)
+	}
+	// Invalid characters
+	for _, invalid := range []string{"bad!", "hello world", "中文", "a/b"} {
+		s := invalid
+		if err := mgr.SetTaskConfig(p.ID, 0, nil, nil, nil, nil, &s); err == nil {
+			t.Fatalf("expected stage %q to be rejected", invalid)
+		}
 	}
 }
 
@@ -386,10 +412,10 @@ func TestPersistenceAcrossMultipleOperations(t *testing.T) {
 
 	// Configure
 	sec0 := 30
-	mgr.SetTaskConfig(p.ID, 0, &sec0, nil, nil, nil)
+	mgr.SetTaskConfig(p.ID, 0, &sec0, nil, nil, nil, nil)
 	sec1 := 60
 	act1 := "skip"
-	mgr.SetTaskConfig(p.ID, 1, &sec1, &act1, nil, nil)
+	mgr.SetTaskConfig(p.ID, 1, &sec1, &act1, nil, nil, nil)
 
 	// Remove index 1 (second X with skip)
 	mgr.RemoveTask(p.ID, 1)
@@ -435,9 +461,9 @@ func TestDuplicateTasksAcrossPipelines(t *testing.T) {
 
 	// Configure differently
 	sec1 := 10
-	mgr.SetTaskConfig(p1.ID, 0, &sec1, nil, nil, nil)
+	mgr.SetTaskConfig(p1.ID, 0, &sec1, nil, nil, nil, nil)
 	sec2 := 20
-	mgr.SetTaskConfig(p2.ID, 0, &sec2, nil, nil, nil)
+	mgr.SetTaskConfig(p2.ID, 0, &sec2, nil, nil, nil, nil)
 
 	p1 = mustGet(t, mgr, p1.ID)
 	p2 = mustGet(t, mgr, p2.ID)
@@ -485,7 +511,7 @@ func TestPipelineFileFormat(t *testing.T) {
 	mustAdd(t, mgr, p.ID, "task-A")
 
 	sec := 30
-	mgr.SetTaskConfig(p.ID, 0, &sec, nil, nil, nil)
+	mgr.SetTaskConfig(p.ID, 0, &sec, nil, nil, nil, nil)
 
 	// Read raw file, verify JSON structure
 	data, err := os.ReadFile(filepath.Join(dir, p.ID+".json"))

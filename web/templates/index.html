@@ -121,6 +121,9 @@
     </select>
 	      <label>超时重试次数</label>
 	      <input type="number" id="task-config-retry" min="0" value="0">
+    <label>Stage（并行分组）</label>
+    <input type="text" id="task-config-stage" placeholder="留空 = 独立执行">
+    <div class="modal-hint">同 Stage 名的相邻 task 将并发执行</div>
     <div class="modal-buttons">
       <button id="task-config-reset" class="danger">重置为默认</button>
       <button id="task-config-cancel">取消</button>

@@ -317,7 +317,7 @@ func (h *Handler) handleUpdatePipeline(w http.ResponseWriter, r *http.Request) {
 		OnTimeout         *string  `json:"on_timeout,omitempty"`
 		ContinueOnFailure *bool    `json:"continue_on_failure,omitempty"`
 		RetryCount        *int     `json:"retry_count,omitempty"`
-		Stage             string  `json:"stage,omitempty"`
+		Stage             *string            `json:"stage,omitempty"`
 		TaskRefs          []pipeline.TaskRef `json:"task_refs"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -344,9 +344,7 @@ func (h *Handler) handleUpdatePipeline(w http.ResponseWriter, r *http.Request) {
 	case "set_loop":
 		err = h.Pipeline.SetLoopCount(id, body.LoopCount)
 	case "set_task_config":
-		err = h.Pipeline.SetTaskConfig(id, body.TaskIndex, body.TimeoutSeconds, body.OnTimeout, body.ContinueOnFailure, body.RetryCount)
-		case "set_task_stage":
-			err = h.Pipeline.SetTaskStage(id, body.TaskIndex, body.Stage)
+		err = h.Pipeline.SetTaskConfig(id, body.TaskIndex, body.TimeoutSeconds, body.OnTimeout, body.ContinueOnFailure, body.RetryCount, body.Stage)
 		case "set_tasks":
 			for _, ref := range body.TaskRefs {
 				if _, err := h.Task.Get(ref.Name); err != nil {

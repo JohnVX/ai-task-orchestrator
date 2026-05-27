@@ -98,7 +98,7 @@ async function renderTaskList() {
     });
     initTaskListSortable();
   } catch (e) {
-    ul.innerHTML = '<li style="color:#d93025">加载失败</li>';
+    ul.innerHTML = '<li style="color:#d93025">加载失败: ' + (e.message || e) + '</li>';
   }
 }
 
@@ -219,7 +219,7 @@ async function renderPipelineList() {
       ul.appendChild(li);
     });
   } catch (e) {
-    ul.innerHTML = '<li style="color:#d93025">加载失败</li>';
+    ul.innerHTML = '<li style="color:#d93025">加载失败: ' + (e.message || e) + '</li>';
   }
 }
 
@@ -261,6 +261,7 @@ async function refreshCanvas() {
     document.getElementById('canvas-content').style.display = 'none';
     return;
   }
+
   document.getElementById('canvas-empty').style.display = 'none';
   document.getElementById('canvas-content').style.display = 'block';
 
@@ -301,12 +302,88 @@ async function refreshCanvas() {
     renderPipelineTasks(data.pipeline, data.tasks, runningTasks, runningStageIdx, highlightIdx, lastRunStatus, taskTimings, (state && state.running_pipelines ? (state.running_pipelines.find(p => p.pipeline_id === currentPipelineId) || {}).iteration || 0 : 0), (state && state.running_pipelines ? (state.running_pipelines.find(p => p.pipeline_id === currentPipelineId) || {}).loop_total || 0 : 0));
     updateRunButtons(data.pipeline, lastRunStatus);
   } catch (e) {
-    document.getElementById('pipeline-task-list').innerHTML = '<li>加载失败</li>';
+    document.getElementById('pipeline-task-list').innerHTML = '<li>加载失败: ' + (e.message || e) + '</li>';
   }
+}
+
+function createTaskItem(t, idx, pipeline, runningTasks, runningStageIdx, highlightIdx, lastRunStatus, taskTimings, taskStageIdx) {
+  const li = document.createElement('li');
+  const span = document.createElement('span');
+  span.textContent = t.name;
+  li.appendChild(span);
+  const badge = document.createElement('span');
+  badge.className = 'task-type-badge ' + (t.type === 'llm-prompt' ? 'type-llm' : 'type-exe');
+  badge.textContent = t.type === 'llm-prompt' ? 'LLM' : 'EXE';
+  li.appendChild(badge);
+
+  li.dataset.taskName = t.name;
+  li.dataset.taskIndex = idx;
+
+  // Task duration display
+  const timing = taskTimings && taskTimings[idx];
+  if (timing && timing.startedAt) {
+    const durSpan = document.createElement('span');
+    durSpan.className = 'task-duration';
+    const start = new Date(timing.startedAt).getTime();
+    if (timing.endedAt) {
+      const end = new Date(timing.endedAt).getTime();
+      durSpan.textContent = ' ' + formatDuration((end - start) / 1000);
+      durSpan.style.color = '#888';
+    } else if (runningTasks && runningStageIdx >= 0 && runningTasks.includes(t.name) && taskStageIdx[idx] === runningStageIdx) {
+      durSpan.textContent = ' ' + formatDuration((Date.now() - start) / 1000);
+      durSpan.style.color = '#1a73e8';
+      durSpan.dataset.startMs = start;
+      durSpan.classList.add('running-duration');
+    }
+    li.appendChild(durSpan);
+  }
+
+  if (runningTasks && runningTasks.length > 0 && runningStageIdx >= 0 && runningTasks.includes(t.name) && taskStageIdx[idx] === runningStageIdx) {
+    li.classList.add('running');
+  }
+  if (idx === highlightIdx && lastRunStatus !== 'success' && pipeline.status !== 'running') {
+    li.classList.add('task-failed');
+  }
+
+  const isRunning = pipeline.status === 'running';
+  if (isRunning) {
+    li.classList.add('pipeline-running');
+  } else {
+    const rmBtn = document.createElement('button');
+    rmBtn.textContent = '\u00D7';
+    rmBtn.className = 'task-remove-btn';
+    rmBtn.title = '\u79FB\u9664';
+    rmBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      if (confirm('\u5C06 "' + t.name + '" \u4ECE\u6D41\u6C34\u7EBF\u4E2D\u79FB\u9664\uFF1F')) {
+        try {
+          await api.removeTask(currentPipelineId, idx);
+          refreshCanvas();
+          renderRunHistory();
+        } catch (e) { alert('\u79FB\u9664\u5931\u8D25: ' + e.message); }
+      }
+    });
+    li.appendChild(rmBtn);
+  }
+
+  li.addEventListener('click', () => {
+    configureTask(t, idx, pipeline.status === 'running');
+  });
+  return li;
 }
 
 function renderPipelineTasks(pipeline, tasks, runningTasks, runningStageIdx, highlightIdx, lastRunStatus, taskTimings, runningIter, runningLoopTotal) {
   window._pipelineTasks = tasks;
+
+  // Pre-compute each task's stage index (0-based) for running-state detection.
+  const taskStageIdx = {};
+  let si = 0;
+  for (let i = 0; i < tasks.length; i++) {
+    const st = tasks[i].stage || '';
+    if (i > 0 && st !== (tasks[i-1].stage || '')) si++;
+    taskStageIdx[i] = si;
+  }
+
   const ul = document.getElementById('pipeline-task-list');
   ul.innerHTML = '';
   // Show schedule info
@@ -398,95 +475,57 @@ function renderPipelineTasks(pipeline, tasks, runningTasks, runningStageIdx, hig
 	      }).then(() => refreshCanvas()).catch(e => alert('修改失败: ' + e.message));
 	    });
 	  }
-  tasks.forEach((t, idx) => {
-    const li = document.createElement('li');
-    const span = document.createElement('span');
-    span.textContent = t.name;
-    li.appendChild(span);
-    const badge = document.createElement('span');
-    badge.className = 'task-type-badge ' + (t.type === 'llm-prompt' ? 'type-llm' : 'type-exe');
-    badge.textContent = t.type === 'llm-prompt' ? 'LLM' : 'EXE';
-    li.appendChild(badge);
-
-    li.dataset.taskName = t.name;
-    li.dataset.taskIndex = idx;
-
-	    // Stage edit icon (hover-visible)
-	    if (!pipeline || pipeline.status !== 'running') {
-	      const editIcon = document.createElement('span');
-	      editIcon.className = 'task-stage-edit';
-	      editIcon.textContent = '\u270E';
-	      editIcon.title = 'Edit stage';
-	      editIcon.addEventListener('click', (e) => {
-	        e.stopPropagation();
-	        showStageInput(li, t, idx);
-	      });
-	      li.appendChild(editIcon);
-	    }
-
-    // Task duration display
-    const timing = taskTimings && taskTimings[idx];
-    if (timing && timing.startedAt) {
-      const durSpan = document.createElement('span');
-      durSpan.className = 'task-duration';
-      const start = new Date(timing.startedAt).getTime();
-      if (timing.endedAt) {
-        const end = new Date(timing.endedAt).getTime();
-        durSpan.textContent = ' ' + formatDuration((end - start) / 1000);
-        durSpan.style.color = '#888';
-      } else if (runningTasks && runningStageIdx >= 0 && runningTasks.includes(t.name)) {
-        durSpan.textContent = ' ' + formatDuration((Date.now() - start) / 1000);
-        durSpan.style.color = '#1a73e8';
-        durSpan.dataset.startMs = start;
-        durSpan.classList.add('running-duration');
+  // Group tasks into render units: standalone <li> or <div class="stage-group">
+  const renderUnits = [];
+  let i = 0;
+  while (i < tasks.length) {
+    const st = tasks[i].stage || '';
+    if (st) {
+      let j = i + 1;
+      while (j < tasks.length && (tasks[j].stage || '') === st) j++;
+      if (j - i >= 2) {
+        renderUnits.push({ type: 'stage', stage: st, tasks: tasks.slice(i, j), startIdx: i });
+        i = j;
+      } else {
+        renderUnits.push({ type: 'task', task: tasks[i], idx: i });
+        i++;
       }
-      li.appendChild(durSpan);
-    }
-
-    if (runningTasks && runningTasks.length > 0 && runningStageIdx >= 0 && runningTasks.includes(t.name)) {
-	      // Check if current stage matches and task is in running list
-	      let stageIdx = 0;
-	      let seenStages = {};
-	      for (let si = 0; si < idx; si++) {
-	        const st = (tasks[si].stage || '');
-	        const prevSt = si > 0 ? (tasks[si-1].stage || '') : '';
-	        if (st && st !== prevSt && st !== '') stageIdx++;
-	        else if (!st && (!prevSt || prevSt === '')) stageIdx++;
-	      }
-	      if (stageIdx === runningStageIdx) li.classList.add('running');
-	    }
-    if (idx === highlightIdx && lastRunStatus !== 'success' && pipeline.status !== 'running') {
-      li.classList.add('task-failed');
-    }
-
-    const isRunning = pipeline.status === 'running';
-    if (isRunning) {
-      li.classList.add('pipeline-running');
     } else {
-      const rmBtn = document.createElement('button');
-      rmBtn.textContent = '×';
-      rmBtn.className = 'task-remove-btn';
-      rmBtn.title = '移除';
-      rmBtn.addEventListener('click', async (e) => {
-        e.stopPropagation();
-        if (confirm('将 "' + t.name + '" 从流水线中移除？')) {
-          try {
-            await api.removeTask(currentPipelineId, idx);
-            refreshCanvas();
-            renderRunHistory();
-          } catch (e) { alert('移除失败: ' + e.message); }
-        }
-      });
-      li.appendChild(rmBtn);
+      renderUnits.push({ type: 'task', task: tasks[i], idx: i });
+      i++;
     }
+  }
 
-    li.addEventListener('click', () => {
-      configureTask(t, idx, pipeline.status === 'running');
-    });
-    ul.appendChild(li);
+  renderUnits.forEach(unit => {
+    if (unit.type === 'stage') {
+      const wrapper = document.createElement('div');
+      wrapper.className = 'stage-group';
+      if (runningTasks && runningStageIdx >= 0 && taskStageIdx[unit.startIdx] === runningStageIdx) {
+        wrapper.classList.add('stage-running');
+      }
+
+      const label = document.createElement('span');
+      label.className = 'stage-group-label';
+      label.textContent = unit.stage;
+      wrapper.appendChild(label);
+
+      unit.tasks.forEach((t, offset) => {
+        const idx = unit.startIdx + offset;
+        const li = createTaskItem(t, idx, pipeline, runningTasks, runningStageIdx, highlightIdx, lastRunStatus, taskTimings, taskStageIdx);
+        li.classList.add('stage-task');
+        wrapper.appendChild(li);
+      });
+
+      ul.appendChild(wrapper);
+    } else {
+      const li = createTaskItem(unit.task, unit.idx, pipeline, runningTasks, runningStageIdx, highlightIdx, lastRunStatus, taskTimings, taskStageIdx);
+      ul.appendChild(li);
+    }
   });
+
   initPipelineSortable(pipeline.status === 'running');
 }
+
 
 // -- task config modal --
 
@@ -515,6 +554,7 @@ function configureTask(task, idx, readOnly) {
   document.getElementById('task-config-action').value = effAction;
   document.getElementById('task-config-continue').value = effContinue ? 'true' : 'false';
 	  document.getElementById('task-config-retry').value = effRetry;
+  document.getElementById('task-config-stage').value = task.stage || '';
 
 	  const inputs = document.querySelectorAll('#task-config-modal input, #task-config-modal select');
 	  inputs.forEach(el => { el.disabled = false; });
@@ -527,35 +567,6 @@ function configureTask(task, idx, readOnly) {
 	    document.getElementById('task-config-reset').disabled = true;
 	  }
 	  document.getElementById('task-config-modal').classList.add('open');
-}
-
-function showStageInput(li, task, idx) {
-  const existing = li.querySelector('.stage-inline-input');
-  if (existing) return;
-  const input = document.createElement('input');
-  input.type = 'text';
-  input.className = 'stage-inline-input';
-  input.value = task.stage || '';
-  input.placeholder = 'stage';
-  input.addEventListener('keydown', async (e) => {
-    if (e.key === 'Enter') {
-      const val = input.value.trim();
-      try {
-        await api.request('PUT', '/api/pipelines/' + currentPipelineId, {
-          action: 'set_task_stage',
-          task_index: idx,
-          stage: val,
-        });
-        refreshCanvas();
-      } catch (err) { alert('Failed: ' + err.message); }
-      input.remove();
-    } else if (e.key === 'Escape') {
-      input.remove();
-    }
-  });
-  input.addEventListener('blur', () => { input.remove(); });
-  li.appendChild(input);
-  input.focus();
 }
 
 function closeConfigModal() {
@@ -577,6 +588,7 @@ function resetConfig() {
     on_timeout: null,
     continue_on_failure: null,
 	    retry_count: null,
+    stage: "",
   }).then(() => refreshCanvas()).catch(e => alert('重置失败: ' + e.message));
 }
 
@@ -597,6 +609,12 @@ function confirmConfig() {
     }
   }
 
+  const stageVal = document.getElementById('task-config-stage').value.trim();
+  if (stageVal && !/^[a-zA-Z_-]+$/.test(stageVal)) {
+    alert('Stage 名仅允许大小写字母、中划线、下划线');
+    return;
+  }
+
   closeConfigModal();
   api.request('PUT', '/api/pipelines/' + currentPipelineId, {
     action: 'set_task_config',
@@ -605,6 +623,7 @@ function confirmConfig() {
     on_timeout: actionVal || null,
     continue_on_failure: continueVal === 'true' ? true : (continueVal === 'false' ? false : null),
 	    retry_count: parseRetryCount(),
+    stage: stageVal,
   }).then(() => refreshCanvas()).catch(e => alert('设置失败: ' + e.message));
 }
 
@@ -649,6 +668,7 @@ function initPipelineSortable(running) {
     group: { name: 'tasks', pull: running ? false : true, put: running ? false : true },
     sort: !running,
     animation: 150,
+    draggable: 'li, .stage-group',  // individual tasks + whole stage groups draggable
     onAdd: async function(evt) {
       if (running) return;
       const taskName = evt.item.dataset.taskName || evt.item.textContent;
@@ -680,6 +700,11 @@ function initPipelineSortable(running) {
           });
         }
       });
+      // Guard: don't save if DOM doesn't match known task list (prevents data loss)
+      if (taskRefs.length !== tasks.length) {
+        refreshCanvas();
+        return;
+      }
       try {
         await api.request('PUT', '/api/pipelines/' + currentPipelineId, {
           action: 'set_tasks',

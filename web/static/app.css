@@ -107,11 +107,11 @@ aside section { margin-bottom: 20px; }
   align-items: center;
   gap: 24px;
   margin: 16px 0;
-  padding: 16px 24px;
+  padding: 32px 24px;
   background: #fff;
   border-radius: 8px;
   border: 2px dashed #ddd;
-  min-height: 80px;
+  min-height: 120px;
   flex-wrap: wrap;
 }
 
@@ -328,6 +328,7 @@ input[type="text"], input[type="file"] {
   margin-bottom: 4px;
 }
 .modal-card input[type="number"],
+.modal-card input[type="text"],
 .modal-card select {
   width: 100%;
   padding: 8px 10px;
@@ -368,66 +369,54 @@ input[type="text"], input[type="file"] {
   color: #fff;
 }
 
-/* Stage visual grouping — adjacent same-stage tasks connected via border */
-#pipeline-task-list li.stage-start {
-  border-top: 2px solid #9c27b0;
-  margin-top: 6px;
-  padding-top: 6px;
+/* Stage group wrapper — vertical stack inside bordered box */
+.stage-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border: 2px solid #ce93d8;
+  border-radius: 8px;
+  padding: 20px 12px 12px 12px;
   position: relative;
+  background: #faf5fc;
 }
-#pipeline-task-list li.stage-start::before {
-  content: attr(data-stage-name);
+.stage-group-label {
   position: absolute;
-  top: -11px;
-  left: 8px;
+  top: -10px;
+  left: 10px;
   background: #fff;
-  padding: 0 6px;
+  padding: 0 8px;
   font-size: 0.7rem;
-  font-weight: 600;
-  color: #9c27b0;
+  font-weight: 700;
+  color: #7b1fa2;
   line-height: 1.4;
-}
-#pipeline-task-list li.stage-continue {
-  border-left: 2px solid #9c27b0;
-  border-right: 2px solid #9c27b0;
-  margin-left: 2px;
-  margin-right: 2px;
-}
-#pipeline-task-list li.stage-end {
-  border-left: 2px solid #9c27b0;
-  border-right: 2px solid #9c27b0;
-  border-bottom: 2px solid #9c27b0;
-  margin-left: 2px;
-  margin-right: 2px;
-  border-radius: 0 0 4px 4px;
-}
-
-/* Stage edit icon on hover */
-.task-stage-edit {
-  display: none;
-  cursor: pointer;
-  font-size: 11px;
-  color: #999;
-  margin-left: 6px;
-  vertical-align: middle;
-}
-#pipeline-task-list li:hover .task-stage-edit {
-  display: inline;
-}
-.task-stage-edit:hover {
-  color: #1a73e8;
-}
-
-/* Inline stage input */
-.stage-inline-input {
-  width: 70px;
-  font-size: 0.7rem;
-  padding: 1px 4px;
-  margin-left: 4px;
-  border: 1px solid #1a73e8;
   border-radius: 3px;
-  vertical-align: middle;
 }
+.stage-group.stage-running {
+  border-color: #4a90d9;
+  box-shadow: 0 0 8px rgba(74,144,217,0.35);
+}
+/* Tasks inside a stage group */
+.stage-group .stage-task {
+  background: #fff;
+}
+#pipeline-task-list .stage-group .stage-task::after {
+  content: none;
+}
+/* Stage group arrow to next item — matches li::after pattern */
+.stage-group::after {
+  content: "→";
+  position: absolute;
+  right: -22px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 1.6rem;
+  font-weight: bold;
+  color: #4a90d9;
+  z-index: 1;
+}
+
+
 
 /* Stage badge on tasks */
 .task-stage-badge {

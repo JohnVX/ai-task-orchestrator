@@ -9,6 +9,12 @@
 - **舞台与演员分离**：ai-task-orchestrator 提供"舞台和调度"，task 是"演员"。支持 `self-contained`（自包含可执行脚本）和 `llm-prompt`（LLM 提示词任务）两种 task 类型。
 - **Agent 可替换**：LLM Agent 通过接口抽象，`--llm-agent` 指定。找不到 agent 时仅警告，不影响 self-contained 任务正常运行。
 
+## 界面截图
+
+![主界面](images/web-page-001.png)
+
+*流水线编排主界面 — 左侧 task 列表，右侧 pipeline 可视编排链（含并行 stage 紫色分组框）*
+
 ## 快速开始
 
 ```bash

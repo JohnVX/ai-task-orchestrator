@@ -322,7 +322,7 @@ func (m *Manager) SetLoopCount(id string, loopCount *int) error {
 // SetTaskConfig updates overrides for a specific task within a pipeline.
 // Pass nil for pointer fields to inherit the task default.
 // onTimeout, when non-nil, must be "skip" or "fail".
-func (m *Manager) SetTaskConfig(pipelineID string, taskIndex int, timeoutSeconds *int, onTimeout *string, continueOnFailure *bool, retryCount *int) error {
+func (m *Manager) SetTaskConfig(pipelineID string, taskIndex int, timeoutSeconds *int, onTimeout *string, continueOnFailure *bool, retryCount *int, stage *string) error {
 	if onTimeout != nil && *onTimeout != "skip" && *onTimeout != "fail" {
 		return fmt.Errorf("on_timeout must be \"skip\", \"fail\", or null to inherit")
 	}
@@ -343,22 +343,14 @@ func (m *Manager) SetTaskConfig(pipelineID string, taskIndex int, timeoutSeconds
 	p.Tasks[taskIndex].OnTimeout = onTimeout
 	p.Tasks[taskIndex].ContinueOnFailure = continueOnFailure
 	p.Tasks[taskIndex].RetryCount = retryCount
-	return m.writePipeline(p)
-}
-
-// SetTaskStage sets the stage name for a task in the pipeline.
-func (m *Manager) SetTaskStage(pipelineID string, taskIndex int, stage string) error {
-	p, err := m.readPipeline(pipelineID)
-	if err != nil {
-		return err
+	if stage != nil {
+		for _, r := range *stage {
+			if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r == '-' || r == '_') {
+				return fmt.Errorf("stage name contains invalid character: %q", r)
+			}
+		}
+		p.Tasks[taskIndex].Stage = *stage
 	}
-	if p.Status == StatusRunning {
-		return fmt.Errorf("cannot modify pipeline while running")
-	}
-	if taskIndex < 0 || taskIndex >= len(p.Tasks) {
-		return fmt.Errorf("invalid task index %d", taskIndex)
-	}
-	p.Tasks[taskIndex].Stage = stage
 	return m.writePipeline(p)
 }
 
