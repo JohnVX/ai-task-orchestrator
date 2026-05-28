@@ -1011,8 +1011,8 @@ func TestContinueOnFailure(t *testing.T) {
 	mustStatus(t, resp, 200)
 
 	_, instances := startAndWait(t, h, p.ID, 10*time.Second)
-	if instances[0].Status != runner.TaskStatusFailed {
-		t.Fatalf("expected first task failed, got %s", instances[0].Status)
+	if instances[0].Status != runner.TaskStatusSkipped {
+		t.Fatalf("expected first task skipped, got %s", instances[0].Status)
 	}
 	if instances[1].Status != runner.TaskStatusSuccess {
 		t.Fatalf("expected second task success (pipeline continued), got %s", instances[1].Status)
@@ -2187,8 +2187,8 @@ func TestStageContinueOnFailure(t *testing.T) {
 	if instances[0].Status != "success" {
 		t.Fatalf("scf-a: expected success, got %s", instances[0].Status)
 	}
-	if instances[1].Status != "failed" {
-		t.Fatalf("scf-b: expected failed, got %s", instances[1].Status)
+	if instances[1].Status != "skipped" {
+		t.Fatalf("scf-b: expected skipped, got %s", instances[1].Status)
 	}
 	if instances[2].Status != "success" {
 		t.Fatalf("scf-c: expected success (pipeline continued), got %s", instances[2].Status)
@@ -2337,8 +2337,8 @@ func TestContinueRunPartialStage(t *testing.T) {
 	if instances[0].Status != "success" {
 		t.Fatalf("cr-a: expected success, got %s", instances[0].Status)
 	}
-	if instances[1].Status != "failed" {
-		t.Fatalf("cr-b: expected failed, got %s", instances[1].Status)
+	if instances[1].Status != "skipped" {
+		t.Fatalf("cr-b: expected skipped, got %s", instances[1].Status)
 	}
 
 	// ContinueRun: only cr-b should re-run

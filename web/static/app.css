@@ -163,6 +163,10 @@ aside section { margin-bottom: 20px; }
   background: #fce8e6;
   border-left: 3px solid #d93025;
 }
+#pipeline-task-list li.task-skipped {
+  background: #fef7e0;
+  border-left: 3px solid #f9ab00;
+}
 
 /* toolbar */
 #pipeline-toolbar {
@@ -415,7 +419,10 @@ input[type="text"], input[type="file"] {
   color: #4a90d9;
   z-index: 1;
 }
-
+/* No dangling arrow on the last stage-group (matches li:last-child::after) */
+#pipeline-task-list .stage-group:last-child::after {
+  content: none;
+}
 
 
 /* Stage badge on tasks */

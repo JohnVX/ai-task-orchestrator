@@ -29,6 +29,7 @@ const (
 	TaskStatusStopped = "stopped"
 	TaskStatusCrashed = "crashed"
 	TaskStatusTimeout = "timeout"
+	TaskStatusSkipped = "skipped"
 )
 
 // RunTask describes a task to execute within a pipeline run, with optional
@@ -548,6 +549,8 @@ func (m *Manager) runLoop(pipelineID, runID, runDir string, tasks []RunTask, ctl
 					continue
 				}
 				if continueOnFailure && inst.Status != TaskStatusStopped {
+					// Overwrite status so ComputeRunStatus sees this as non-failure.
+					writeTaskMeta(taskDir, st.task.Name, runID, pipelineID, TaskStatusSkipped, inst.StartedAt, inst.EndedAt, inst.ExitCode, st.index)
 					continue
 				}
 				return
@@ -1195,11 +1198,12 @@ func ComputeRunStatus(instances []TaskInstance) string {
 	if isRunning {
 		return "running"
 	}
-	if instances[len(instances)-1].Status == TaskStatusSuccess {
-		return "success"
-	}
 	if hasHardFailure {
 		return "failed"
+	}
+	if instances[len(instances)-1].Status == TaskStatusSuccess ||
+		instances[len(instances)-1].Status == TaskStatusSkipped {
+		return "success"
 	}
 	return "failed"
 }

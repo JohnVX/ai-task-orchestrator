@@ -544,7 +544,168 @@ echo "first attempt timeout"
 	}
 }
 
-// --- helpers ---
+// ===== resolveRemainingLoop =====
+
+func TestResolveRemainingLoopNoFile(t *testing.T) {
+	dir := t.TempDir()
+	remaining, iteration, total := resolveRemainingLoop(dir)
+	if remaining != 1 || iteration != 1 || total != 1 {
+		t.Fatalf("expected (1,1,1) for missing file, got (%d,%d,%d)", remaining, iteration, total)
+	}
+}
+
+func TestResolveRemainingLoopFirstIteration(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "iteration.json"), []byte(`{"iteration":1,"loop_total":5}`), 0644)
+	remaining, iteration, total := resolveRemainingLoop(dir)
+	if remaining != 5 || iteration != 1 || total != 5 {
+		t.Fatalf("expected (5,1,5), got (%d,%d,%d)", remaining, iteration, total)
+	}
+}
+
+func TestResolveRemainingLoopMidIteration(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "iteration.json"), []byte(`{"iteration":3,"loop_total":5}`), 0644)
+	remaining, iteration, total := resolveRemainingLoop(dir)
+	if remaining != 3 || iteration != 3 || total != 5 {
+		t.Fatalf("expected (3,3,5), got (%d,%d,%d)", remaining, iteration, total)
+	}
+}
+
+func TestResolveRemainingLoopLastIteration(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "iteration.json"), []byte(`{"iteration":5,"loop_total":5}`), 0644)
+	remaining, iteration, total := resolveRemainingLoop(dir)
+	if remaining != 1 || iteration != 5 || total != 5 {
+		t.Fatalf("expected (1,5,5), got (%d,%d,%d)", remaining, iteration, total)
+	}
+}
+
+func TestResolveRemainingLoopForever(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "iteration.json"), []byte(`{"iteration":7,"loop_total":0}`), 0644)
+	remaining, iteration, total := resolveRemainingLoop(dir)
+	if remaining != 0 || iteration != 7 || total != 0 {
+		t.Fatalf("expected (0,7,0) for forever loop, got (%d,%d,%d)", remaining, iteration, total)
+	}
+}
+
+func TestResolveRemainingLoopCorruptFile(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "iteration.json"), []byte(`garbage`), 0644)
+	remaining, iteration, total := resolveRemainingLoop(dir)
+	if remaining != 1 || iteration != 1 || total != 1 {
+		t.Fatalf("expected (1,1,1) for corrupt file, got (%d,%d,%d)", remaining, iteration, total)
+	}
+}
+
+func TestResolveRemainingLoopNegative(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "iteration.json"), []byte(`{"iteration":0,"loop_total":2}`), 0644)
+	remaining, iteration, total := resolveRemainingLoop(dir)
+	if remaining != 3 || iteration != 0 || total != 2 {
+		t.Fatalf("expected (3,0,2), got (%d,%d,%d)", remaining, iteration, total)
+	}
+}
+
+// ===== runSeq =====
+
+func TestRunSeq(t *testing.T) {
+	tests := []struct {
+		runID string
+		want  int
+	}{
+		{"run-pipeline-1-000001", 1},
+		{"run-pipeline-1-000042", 42},
+		{"run-p1-000999", 999},
+		{"no-separator", 0},
+		{"run-", 0},
+		{"", 0},
+		{"run-p-000000", 0},
+		{"run-p-0000ab", 0},
+	}
+	for _, tt := range tests {
+		got := runSeq(tt.runID)
+		if got != tt.want {
+			t.Errorf("runSeq(%q) = %d, want %d", tt.runID, got, tt.want)
+		}
+	}
+}
+
+// ===== DeleteRun =====
+
+func TestDeleteRunUnit(t *testing.T) {
+	dir := t.TempDir()
+	dataDir := filepath.Join(dir, "data")
+	runsDir := filepath.Join(dataDir, "runs")
+	os.MkdirAll(runsDir, 0755)
+
+	taskMgr := task.NewManager(filepath.Join(dataDir, "tasks"), filepath.Join(dataDir, "task_meta"), filepath.Join(dataDir, "pipelines"))
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mgr := NewManager(runsDir, dataDir, taskMgr, logger, agent.MustGet("claude-code"))
+
+	// Non-existent run
+	if err := mgr.DeleteRun("run-nonexist-000001"); err == nil {
+		t.Fatal("expected error for non-existent run")
+	}
+
+	// Invalid run ID
+	if err := mgr.DeleteRun("not-a-run"); err == nil {
+		t.Fatal("expected error for invalid run ID")
+	}
+	if !strings.Contains(mgr.DeleteRun("not-a-run").Error(), "invalid") {
+		t.Fatal("expected 'invalid' error message")
+	}
+
+	// Create a run with task data
+	runDir := filepath.Join(runsDir, "run-p1-000001")
+	os.MkdirAll(filepath.Join(runDir, "task-A-0"), 0755)
+	now := time.Now().UTC()
+	writeTaskMeta(filepath.Join(runDir, "task-A-0"), "task-A", "run-p1-000001", "pipeline-1", TaskStatusSuccess, &now, &now, 0, 0)
+
+	// Delete it
+	if err := mgr.DeleteRun("run-p1-000001"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := os.Stat(runDir); !os.IsNotExist(err) {
+		t.Fatal("run dir should be removed after delete")
+	}
+}
+
+// ===== RunDirSize =====
+
+func TestRunDirSize(t *testing.T) {
+	dir := t.TempDir()
+	runsDir := filepath.Join(dir, "runs")
+	os.MkdirAll(runsDir, 0755)
+
+	taskMgr := task.NewManager(filepath.Join(dir, "tasks"), filepath.Join(dir, "task_meta"), filepath.Join(dir, "pipelines"))
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mgr := NewManager(runsDir, dir, taskMgr, logger, agent.MustGet("claude-code"))
+
+	runDir := filepath.Join(runsDir, "run-p1-000001")
+	os.MkdirAll(runDir, 0755)
+	os.WriteFile(filepath.Join(runDir, "test.log"), []byte("hello"), 0644)
+
+	size, err := mgr.RunDirSize("run-p1-000001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if size <= 0 {
+		t.Fatalf("expected positive size, got %d", size)
+	}
+
+	// Non-existent run — walk swallows the error, returns 0 size
+	size, err = mgr.RunDirSize("run-nonexist")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if size != 0 {
+		t.Fatalf("expected 0 size for non-existent run, got %d", size)
+	}
+}
+
+// ===== helpers =====
 
 func intPtr(v int) *int { return &v }
 

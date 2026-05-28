@@ -51,6 +51,7 @@ const api = {
 
 let currentPipelineId = null;
 let pollTimer = null;
+let currentRunDetailId = null;
 
 // --- init ---
 
@@ -288,7 +289,7 @@ async function refreshCanvas() {
         lastRunStatus = runs[0].status;
         const instances = await api.getRun(runs[0].run_id);
         instances.forEach(inst => {
-          if (inst.status !== 'success' && inst.status !== 'pending') {
+          if (inst.status !== 'success' && inst.status !== 'pending' && inst.status !== 'skipped') {
             highlightIdx = inst.index;
           }
           taskTimings[inst.index] = {
@@ -343,6 +344,8 @@ function createTaskItem(t, idx, pipeline, runningTasks, runningStageIdx, highlig
   }
   if (idx === highlightIdx && lastRunStatus !== 'success' && pipeline.status !== 'running') {
     li.classList.add('task-failed');
+  } else if (taskTimings && taskTimings[idx] && taskTimings[idx].status === 'skipped') {
+    li.classList.add('task-skipped');
   }
 
   const isRunning = pipeline.status === 'running';
@@ -483,13 +486,8 @@ function renderPipelineTasks(pipeline, tasks, runningTasks, runningStageIdx, hig
     if (st) {
       let j = i + 1;
       while (j < tasks.length && (tasks[j].stage || '') === st) j++;
-      if (j - i >= 2) {
-        renderUnits.push({ type: 'stage', stage: st, tasks: tasks.slice(i, j), startIdx: i });
-        i = j;
-      } else {
-        renderUnits.push({ type: 'task', task: tasks[i], idx: i });
-        i++;
-      }
+      renderUnits.push({ type: 'stage', stage: st, tasks: tasks.slice(i, j), startIdx: i });
+      i = j;
     } else {
       renderUnits.push({ type: 'task', task: tasks[i], idx: i });
       i++;
@@ -814,6 +812,12 @@ async function renderRunHistory() {
         if (!confirm('确定删除 ' + runId + ' 吗？此操作不可撤销。')) return;
         try {
           await api.deleteRun(runId);
+          if (runId === currentRunDetailId) {
+            currentRunDetailId = null;
+            clearAutoRefresh();
+            document.getElementById('run-detail').style.display = 'none';
+            document.getElementById('log-viewer').style.display = 'none';
+          }
           renderRunHistory();
           refreshCanvas();
         } catch (e) { alert('删除失败: ' + e.message); }
@@ -825,6 +829,7 @@ async function renderRunHistory() {
 }
 
 async function showRunDetail(runId) {
+  currentRunDetailId = runId;
   try {
     const instances = await api.getRun(runId);
     let html = '<h3>Run: ' + runId + '</h3><ul style="list-style:none;margin:8px 0">';
