@@ -574,7 +574,7 @@ function configureTask(task, idx, readOnly) {
 	  document.getElementById('task-config-retry').value = effRetry;
   document.getElementById('task-config-stage').value = task.stage || '';
 
-	  const inputs = document.querySelectorAll('#task-config-modal input, #task-config-modal select');
+	  const inputs = document.querySelectorAll('#task-config-modal input:not(#task-config-agent), #task-config-modal select');
 	  inputs.forEach(el => { el.disabled = false; });
 	  document.getElementById('task-config-confirm').disabled = false;
 	  document.getElementById('task-config-reset').disabled = false;

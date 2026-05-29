@@ -382,8 +382,10 @@ func (m *Manager) SetConfig(name, runCmd, stopCmd string, timeoutEnabled bool, t
 	if err != nil {
 		return fmt.Errorf("task %q not found: %w", name, err)
 	}
-	meta.RunCommand = runCmd
-	meta.StopCommand = stopCmd
+	if meta.Type != TypeLLMPrompt {
+		meta.RunCommand = runCmd
+		meta.StopCommand = stopCmd
+	}
 	meta.TimeoutEnabled = timeoutEnabled
 	meta.TimeoutSeconds = timeoutSeconds
 	meta.OnTimeout = onTimeout

@@ -105,12 +105,13 @@ func TestContractTaskDetail(t *testing.T) {
 	requireNumField(t, meta, "retry_count", "GET /api/tasks/{name}.meta")
 	// on_timeout may be omitted when empty (omitempty)
 
-	// LLM task: type field must be present
+	// LLM task: type and llm_agent fields must be present
 	resp2 := doRequest(t, h, "GET", "/api/tasks/ct-llm", nil)
 	mustStatus(t, resp2, 200)
 	data2 := decodeMap(t, resp2)
 	meta2 := data2["meta"].(map[string]interface{})
 	requireStringField(t, meta2, "type", "GET /api/tasks/{name}.meta (llm-prompt)")
+	requireStringField(t, meta2, "llm_agent", "GET /api/tasks/{name}.meta (llm-prompt)")
 }
 
 // --- GET /api/pipelines ---
@@ -415,6 +416,8 @@ func TestContractEnrichedTasksHaveType(t *testing.T) {
 	if !ok || t1type != "llm-prompt" {
 		t.Errorf("expected llm-prompt task to have type='llm-prompt', got type=%q", t1type)
 	}
+	// LLM tasks must carry llm_agent field
+	requireStringField(t, task1, "llm_agent", "GET /api/pipelines/{id}.tasks[] (llm-prompt)")
 }
 
 // --- POST /api/pipelines ---
