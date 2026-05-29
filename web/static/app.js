@@ -17,7 +17,7 @@ const api = {
   getTasks()         { return this.request('GET', '/api/tasks'); },
   uploadTask(file)   { const fd = new FormData(); fd.append('file', file); return this.request('POST', '/api/tasks', fd); },
   getTask(name)      { return this.request('GET', '/api/tasks/' + encodeURIComponent(name)); },
-  updateTask(name, runCmd, stopCmd, timeoutEnabled, timeoutSeconds, onTimeout, continueOnFailure, retryCount) {
+  updateTask(name, runCmd, stopCmd, timeoutEnabled, timeoutSeconds, onTimeout, continueOnFailure, retryCount, llmAgent) {
     return this.request('PUT', '/api/tasks/' + encodeURIComponent(name), {
       run_command: runCmd,
       stop_command: stopCmd,
@@ -26,6 +26,7 @@ const api = {
       on_timeout: onTimeout,
       continue_on_failure: continueOnFailure,
 	      retry_count: retryCount,
+      llm_agent: llmAgent || undefined,
     });
   },
   deleteTask(name)   { return this.request('DELETE', '/api/tasks/' + encodeURIComponent(name)); },
@@ -111,13 +112,19 @@ async function showTaskDetail(name) {
 
     const panel = document.getElementById('task-detail');
     panel.querySelector('.task-detail-name').textContent = meta.name;
-    const runCmdInput = panel.querySelector('.task-detail-run-cmd');
-    const stopCmdInput = panel.querySelector('.task-detail-stop-cmd');
     const isLLM = meta.type === 'llm-prompt';
-    runCmdInput.value = isLLM ? '（LLM Agent 接管，不适用）' : (meta.run_command || '');
-    runCmdInput.disabled = isLLM;
-    stopCmdInput.value = isLLM ? '（LLM Agent 接管，不适用）' : (meta.stop_command || '');
-    stopCmdInput.disabled = isLLM;
+    const cmdFields = panel.querySelector('.task-detail-cmd-fields');
+    const agentFields = panel.querySelector('.task-detail-agent-fields');
+    if (isLLM) {
+      cmdFields.style.display = 'none';
+      agentFields.style.display = 'block';
+      panel.querySelector('.task-detail-agent').value = meta.llm_agent || 'claude-code';
+    } else {
+      cmdFields.style.display = 'block';
+      agentFields.style.display = 'none';
+      panel.querySelector('.task-detail-run-cmd').value = meta.run_command || '';
+      panel.querySelector('.task-detail-stop-cmd').value = meta.stop_command || '';
+    }
     panel.querySelector('.task-detail-readme').textContent = readme;
 
     const timeoutEnable = panel.querySelector('.task-detail-timeout-enable');
@@ -150,15 +157,17 @@ function initTaskDetailButtons() {
   document.getElementById('task-save-btn').addEventListener('click', async () => {
     const panel = document.getElementById('task-detail');
     const name = panel.dataset.taskName;
-    const runCmd = panel.querySelector('.task-detail-run-cmd').value;
-    const stopCmd = panel.querySelector('.task-detail-stop-cmd').value;
+    const isLLM = panel.querySelector('.task-detail-agent-fields').style.display !== 'none';
+    const runCmd = isLLM ? '' : panel.querySelector('.task-detail-run-cmd').value;
+    const stopCmd = isLLM ? '' : panel.querySelector('.task-detail-stop-cmd').value;
+    const llmAgent = isLLM ? panel.querySelector('.task-detail-agent').value : '';
     const timeoutEnabled = panel.querySelector('.task-detail-timeout-enable').checked;
     const timeoutSeconds = parseInt(panel.querySelector('.task-detail-timeout-sec').value, 10) || 0;
     const onTimeout = panel.querySelector('.task-detail-timeout-action').value;
     const continueOnFailure = panel.querySelector('.task-detail-continue-on-failure').checked;
 	    const retryCount = parseInt(panel.querySelector('.task-detail-retry-count').value, 10) || 0;
     try {
-      await api.updateTask(name, runCmd, stopCmd, timeoutEnabled, timeoutSeconds, onTimeout, continueOnFailure, retryCount);
+      await api.updateTask(name, runCmd, stopCmd, timeoutEnabled, timeoutSeconds, onTimeout, continueOnFailure, retryCount, llmAgent);
       hideTaskDetail();
       renderTaskList();
     } catch (e) { alert('保存失败: ' + e.message); }
@@ -535,7 +544,18 @@ function configureTask(task, idx, readOnly) {
   currentConfigIndex = idx;
   const meta = window.taskMetas ? window.taskMetas[task.name] : null;
 
-  // Resolve effective values: pipeline override > task default > platform default
+  const isLLM = meta ? meta.type === 'llm-prompt' : (task.type === 'llm-prompt');
+
+  const agentSection = document.getElementById('task-config-agent-section');
+  if (isLLM) {
+    agentSection.style.display = 'block';
+    const agentName = meta ? (meta.llm_agent || 'claude-code') : (task.llm_agent || 'claude-code');
+    const agentLabel = agentName === 'opencode' ? 'OpenCode' : 'Claude Code';
+    document.getElementById('task-config-agent').value = agentLabel;
+  } else {
+    agentSection.style.display = 'none';
+  }
+
   const effSec = (task.timeout_seconds !== null && task.timeout_seconds !== undefined)
     ? task.timeout_seconds
     : (meta ? (meta.timeout_enabled ? meta.timeout_seconds : 0) : null);

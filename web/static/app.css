@@ -435,3 +435,20 @@ input[type="text"], input[type="file"] {
   margin-left: 4px;
   vertical-align: middle;
 }
+
+.task-detail-agent-fields label {
+  display: block;
+  font-size: 0.75rem;
+  color: #888;
+  margin-top: 6px;
+}
+
+#task-detail select.task-detail-agent {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  background: #fff;
+  margin-bottom: 6px;
+}

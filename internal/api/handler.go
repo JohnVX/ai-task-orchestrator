@@ -171,12 +171,13 @@ func (h *Handler) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
 		OnTimeout         string `json:"on_timeout"`
 		ContinueOnFailure bool   `json:"continue_on_failure"`
 		RetryCount        int    `json:"retry_count"`
+		LLMAgent          string `json:"llm_agent,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		h.writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
-	if err := h.Task.SetConfig(name, body.RunCommand, body.StopCommand, body.TimeoutEnabled, body.TimeoutSeconds, body.OnTimeout, body.ContinueOnFailure, body.RetryCount); err != nil {
+	if err := h.Task.SetConfig(name, body.RunCommand, body.StopCommand, body.TimeoutEnabled, body.TimeoutSeconds, body.OnTimeout, body.ContinueOnFailure, body.RetryCount, body.LLMAgent); err != nil {
 		h.writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
@@ -270,6 +271,7 @@ func (h *Handler) handleGetPipeline(w http.ResponseWriter, r *http.Request) {
 		RunCmd            string  `json:"run_command"`
 		StopCmd           string  `json:"stop_command"`
 		Readme            string  `json:"readme"`
+		LLMAgent          string  `json:"llm_agent,omitempty"`
 		TimeoutSeconds    *int    `json:"timeout_seconds,omitempty"`
 		OnTimeout         *string `json:"on_timeout,omitempty"`
 		ContinueOnFailure *bool   `json:"continue_on_failure,omitempty"`
@@ -290,6 +292,7 @@ func (h *Handler) handleGetPipeline(w http.ResponseWriter, r *http.Request) {
 			info.Type = meta.Type
 			info.RunCmd = meta.RunCommand
 			info.StopCmd = meta.StopCommand
+			info.LLMAgent = meta.LLMAgent
 		}
 		if readme, found := h.Task.ParseReadme(ref.Name); found {
 			info.Readme = readme

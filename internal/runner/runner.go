@@ -650,12 +650,21 @@ func (m *Manager) runOneTask(runID, runDir, pipelineID, writeBuf, readBuf string
 		if meta.Type == task.TypeLLMPrompt {
 			workDir := filepath.Join(m.dataDir, meta.PackagePath)
 			promptFile := filepath.Join(workDir, "prompt.md")
-			if m.llmAgent == nil {
+			agt := m.llmAgent
+			if meta.LLMAgent != "" {
+				taskAgt, aerr := agent.Get(meta.LLMAgent)
+				if aerr != nil {
+					m.logger.Warn("task agent not available, falling back to global", "task", logName, "agent", meta.LLMAgent, "error", aerr)
+				} else {
+					agt = taskAgt
+				}
+			}
+			if agt == nil {
 				execErr = fmt.Errorf("llm agent not configured, cannot run llm-prompt task")
 				timedOut = false
 				break
 			}
-			c, cerr := m.llmAgent.BuildCommand(promptFile, workDir)
+			c, cerr := agt.BuildCommand(promptFile, workDir)
 			if cerr != nil {
 				execErr = cerr
 				timedOut = false

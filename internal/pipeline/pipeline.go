@@ -21,11 +21,12 @@ const (
 // When pointer fields are nil, the task's default settings are inherited.
 type TaskRef struct {
 	Name              string  `json:"name"`
-	TimeoutSeconds    *int    `json:"timeout_seconds,omitempty"`    // nil=inherit, 0=disable, >0=seconds
-	OnTimeout         *string `json:"on_timeout,omitempty"`         // nil=inherit
-	ContinueOnFailure *bool   `json:"continue_on_failure,omitempty"` // nil=inherit
-	RetryCount        *int    `json:"retry_count,omitempty"`         // nil=inherit
+	TimeoutSeconds    *int    `json:"timeout_seconds,omitempty"`
+	OnTimeout         *string `json:"on_timeout,omitempty"`
+	ContinueOnFailure *bool   `json:"continue_on_failure,omitempty"`
+	RetryCount        *int    `json:"retry_count,omitempty"`
 	Stage             string  `json:"stage,omitempty"`
+	LLMAgent          string  `json:"llm_agent,omitempty"`
 }
 
 // Pipeline represents a named, ordered sequence of tasks.

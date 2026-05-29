@@ -26,6 +26,7 @@ type Meta struct {
 	RunCommand        string    `json:"run_command"`
 	StopCommand       string    `json:"stop_command"`
 	Type              string    `json:"type,omitempty"`
+	LLMAgent          string    `json:"llm_agent,omitempty"`
 	ReadmePath        string    `json:"readme_path,omitempty"`
 	TimeoutEnabled    bool      `json:"timeout_enabled"`
 	TimeoutSeconds    int       `json:"timeout_seconds"`
@@ -174,10 +175,15 @@ func (m *Manager) Upload(tarPath string) (*Meta, error) {
 	taskType, rc, sc := parseTaskDescriptor(dstDir)
 
 	var runCmd, stopCmd string
+	var llmAgent string
 	switch taskType {
 	case TypeLLMPrompt:
 		if _, err := os.Stat(filepath.Join(dstDir, "prompt.md")); os.IsNotExist(err) {
 			return nil, fmt.Errorf("llm-prompt task %q requires prompt.md in package", name)
+		}
+		llmAgent, _ = parseAgentFromDescriptor(dstDir)
+		if llmAgent == "" {
+			llmAgent = "claude-code"
 		}
 	case "", TypeSelfContained:
 		taskType = TypeSelfContained
@@ -199,6 +205,7 @@ func (m *Manager) Upload(tarPath string) (*Meta, error) {
 		UploadedAt:  time.Now().UTC(),
 		RunCommand:  runCmd,
 		StopCommand: stopCmd,
+		LLMAgent:    llmAgent,
 		ReadmePath:  readmePath,
 	}
 	if err := m.writeMeta(meta); err != nil {
@@ -286,7 +293,6 @@ func parseTaskDescriptor(dir string) (taskType, runCmd, stopCmd string) {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		// Strip inline comment
 		if idx := strings.Index(line, "#"); idx >= 0 {
 			line = strings.TrimSpace(line[:idx])
 			if line == "" {
@@ -301,6 +307,30 @@ func parseTaskDescriptor(dir string) (taskType, runCmd, stopCmd string) {
 		}
 		if rest, ok := strings.CutPrefix(line, "stop:"); ok && stopCmd == "" {
 			stopCmd = strings.TrimSpace(rest)
+		}
+	}
+	return
+}
+
+func parseAgentFromDescriptor(dir string) (agentName string, found bool) {
+	data, err := os.ReadFile(filepath.Join(dir, "for-task-orchestrator.txt"))
+	if err != nil {
+		return "", false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if idx := strings.Index(line, "#"); idx >= 0 {
+			line = strings.TrimSpace(line[:idx])
+			if line == "" {
+				continue
+			}
+		}
+		if rest, ok := strings.CutPrefix(line, "agent:"); ok && agentName == "" {
+			agentName = strings.TrimSpace(rest)
+			found = true
 		}
 	}
 	return
@@ -344,7 +374,7 @@ func (m *Manager) ParseReadme(name string) (content string, found bool) {
 }
 
 // SetConfig persists task configuration: commands, timeout, continue-on-failure settings.
-func (m *Manager) SetConfig(name, runCmd, stopCmd string, timeoutEnabled bool, timeoutSeconds int, onTimeout string, continueOnFailure bool, retryCount int) error {
+func (m *Manager) SetConfig(name, runCmd, stopCmd string, timeoutEnabled bool, timeoutSeconds int, onTimeout string, continueOnFailure bool, retryCount int, llmAgent string) error {
 	if onTimeout != "" && onTimeout != "skip" && onTimeout != "fail" {
 		return fmt.Errorf("on_timeout must be \"skip\", \"fail\", or empty to inherit default")
 	}
@@ -359,6 +389,9 @@ func (m *Manager) SetConfig(name, runCmd, stopCmd string, timeoutEnabled bool, t
 	meta.OnTimeout = onTimeout
 	meta.ContinueOnFailure = continueOnFailure
 	meta.RetryCount = retryCount
+	if llmAgent != "" {
+		meta.LLMAgent = llmAgent
+	}
 	return m.writeMeta(meta)
 }
 

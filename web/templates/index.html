@@ -36,10 +36,19 @@
       <!-- task detail panel -->
       <div id="task-detail" style="display:none">
         <h3 class="task-detail-name"></h3>
-        <label>Run Command:</label>
-        <input type="text" class="task-detail-run-cmd">
-        <label>Stop Command:</label>
-        <input type="text" class="task-detail-stop-cmd">
+        <div class="task-detail-cmd-fields">
+          <label>Run Command:</label>
+          <input type="text" class="task-detail-run-cmd">
+          <label>Stop Command:</label>
+          <input type="text" class="task-detail-stop-cmd">
+        </div>
+        <div class="task-detail-agent-fields" style="display:none">
+          <label>LLM Agent:</label>
+          <select class="task-detail-agent">
+            <option value="claude-code">Claude Code</option>
+            <option value="opencode">OpenCode</option>
+          </select>
+        </div>
         <div class="timeout-config">
           <label class="timeout-label">
             <input type="checkbox" class="task-detail-timeout-enable"> 启用超时
@@ -100,12 +109,16 @@
 </footer>
 
 <script src="/static/sortable.min.js"></script>
-<script src="/static/app.js?v=5"></script>
+<script src="/static/app.js?v=6"></script>
 
 <!-- task config modal -->
 <div id="task-config-modal" class="modal-overlay">
   <div class="modal-card">
     <h3 id="task-config-title">配置</h3>
+    <div id="task-config-agent-section" style="display:none;margin-bottom:12px">
+      <label style="margin-top:0">LLM Agent</label>
+      <input type="text" id="task-config-agent" readonly style="background:#f5f5f5;color:#666;cursor:default">
+    </div>
     <label>超时秒数</label>
     <input type="number" id="task-config-sec" min="0" placeholder="当前实际值: 见输入框">
     <div class="modal-hint">0 = 禁用超时</div>

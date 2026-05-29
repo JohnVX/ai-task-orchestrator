@@ -197,6 +197,43 @@ func TestParseTaskDescriptorBlankLines(t *testing.T) {
 	}
 }
 
+func TestParseAgentFromDescriptorFound(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "for-task-orchestrator.txt"),
+		[]byte("type: llm-prompt\nagent: opencode\n"), 0644)
+	agentName, found := parseAgentFromDescriptor(dir)
+	if !found {
+		t.Fatal("expected agent to be found")
+	}
+	if agentName != "opencode" {
+		t.Fatalf("expected opencode, got %q", agentName)
+	}
+}
+
+func TestParseAgentFromDescriptorMissing(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "for-task-orchestrator.txt"),
+		[]byte("type: llm-prompt\n"), 0644)
+	agentName, found := parseAgentFromDescriptor(dir)
+	if found {
+		t.Fatal("expected agent not found")
+	}
+	if agentName != "" {
+		t.Fatalf("expected empty agent, got %q", agentName)
+	}
+}
+
+func TestParseAgentFromDescriptorNoFile(t *testing.T) {
+	dir := t.TempDir()
+	agentName, found := parseAgentFromDescriptor(dir)
+	if found {
+		t.Fatal("expected not found for missing file")
+	}
+	if agentName != "" {
+		t.Fatalf("expected empty agent, got %q", agentName)
+	}
+}
+
 // ===== extractTar =====
 
 func makeTestTar(t *testing.T, files map[string]string) string {
@@ -399,7 +436,7 @@ func TestSetConfig(t *testing.T) {
 	mgr := newTestManager(t)
 	writeMetaFile(t, mgr, &Meta{Name: "cfg", RunCommand: "./old.sh"})
 
-	if err := mgr.SetConfig("cfg", "./new.sh", "", true, 30, "skip", true, 2); err != nil {
+	if err := mgr.SetConfig("cfg", "./new.sh", "", true, 30, "skip", true, 2, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -423,7 +460,7 @@ func TestSetConfig(t *testing.T) {
 
 func TestSetConfigNonExistent(t *testing.T) {
 	mgr := newTestManager(t)
-	err := mgr.SetConfig("no-such", "x", "", false, 0, "", false, 0)
+	err := mgr.SetConfig("no-such", "x", "", false, 0, "", false, 0, "")
 	if err == nil {
 		t.Fatal("expected error for non-existent task")
 	}
@@ -432,9 +469,21 @@ func TestSetConfigNonExistent(t *testing.T) {
 func TestSetConfigInvalidOnTimeout(t *testing.T) {
 	mgr := newTestManager(t)
 	writeMetaFile(t, mgr, &Meta{Name: "bad"})
-	err := mgr.SetConfig("bad", "x", "", false, 0, "garbage", false, 0)
+	err := mgr.SetConfig("bad", "x", "", false, 0, "garbage", false, 0, "")
 	if err == nil {
 		t.Fatal("expected error for invalid on_timeout")
+	}
+}
+
+func TestSetConfigLLMAgent(t *testing.T) {
+	mgr := newTestManager(t)
+	writeMetaFile(t, mgr, &Meta{Name: "llm-task", Type: "llm-prompt"})
+	if err := mgr.SetConfig("llm-task", "", "", false, 0, "", false, 0, "opencode"); err != nil {
+		t.Fatal(err)
+	}
+	meta, _ := mgr.Get("llm-task")
+	if meta.LLMAgent != "opencode" {
+		t.Fatalf("expected llm_agent=opencode, got %q", meta.LLMAgent)
 	}
 }
 
