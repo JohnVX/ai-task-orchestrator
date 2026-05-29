@@ -505,8 +505,22 @@ func (m *Manager) runLoop(pipelineID, runID, runDir string, tasks []RunTask, ctl
 			writeBuf := fmt.Sprintf("task-data-%d", (stageIdx%2)+1)
 			readBuf := fmt.Sprintf("task-data-%d", ((stageIdx+1)%2)+1)
 
-			if err := clearDir(filepath.Join(runDir, writeBuf)); err != nil {
-				m.logger.Warn("clear write buffer", "dir", writeBuf, "error", err)
+			// During ContinueRun, skip buffer clearing for fully-skipped stages
+			// to preserve data written by the original successful run.
+			hasWork := skipSet == nil
+			if !hasWork {
+				for _, st := range stage.tasks {
+					if !skipSet[st.index] {
+						hasWork = true
+						break
+					}
+				}
+			}
+
+			if hasWork {
+				if err := clearDir(filepath.Join(runDir, writeBuf)); err != nil {
+					m.logger.Warn("clear write buffer", "dir", writeBuf, "error", err)
+				}
 			}
 
 			m.updateStateForStage(pipelineID, runID, stageIdx, stage)
@@ -556,8 +570,10 @@ func (m *Manager) runLoop(pipelineID, runID, runDir string, tasks []RunTask, ctl
 				return
 			}
 
-			if err := clearDir(filepath.Join(runDir, readBuf)); err != nil {
-				m.logger.Warn("clear read buffer", "dir", readBuf, "error", err)
+			if hasWork {
+				if err := clearDir(filepath.Join(runDir, readBuf)); err != nil {
+					m.logger.Warn("clear read buffer", "dir", readBuf, "error", err)
+				}
 			}
 		}
 	}

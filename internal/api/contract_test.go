@@ -112,6 +112,12 @@ func TestContractTaskDetail(t *testing.T) {
 	meta2 := data2["meta"].(map[string]interface{})
 	requireStringField(t, meta2, "type", "GET /api/tasks/{name}.meta (llm-prompt)")
 	requireStringField(t, meta2, "llm_agent", "GET /api/tasks/{name}.meta (llm-prompt)")
+	if meta2["type"].(string) != "llm-prompt" {
+		t.Errorf("expected type 'llm-prompt', got %q", meta2["type"])
+	}
+	if meta2["llm_agent"].(string) != "claude-code" {
+		t.Errorf("expected llm_agent 'claude-code', got %q", meta2["llm_agent"])
+	}
 }
 
 // --- GET /api/pipelines ---
@@ -418,6 +424,14 @@ func TestContractEnrichedTasksHaveType(t *testing.T) {
 	}
 	// LLM tasks must carry llm_agent field
 	requireStringField(t, task1, "llm_agent", "GET /api/pipelines/{id}.tasks[] (llm-prompt)")
+	if task1["llm_agent"].(string) != "claude-code" {
+		t.Errorf("expected llm_agent 'claude-code', got %q", task1["llm_agent"])
+	}
+	// Self-contained task should not have llm_agent field
+	task0 := tasks[0].(map[string]interface{})
+	if _, exists := task0["llm_agent"]; exists {
+		t.Errorf("self-contained task should not have llm_agent field, got %v", task0["llm_agent"])
+	}
 }
 
 // --- POST /api/pipelines ---

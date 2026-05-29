@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -58,6 +59,7 @@ type Manager struct {
 	pipelinesDir string
 	taskMgr      TaskChecker
 	runCleaner   RunCleaner
+	mu           sync.Mutex
 }
 
 // NewManager creates a Manager. It ensures the pipelines directory exists.
@@ -119,6 +121,8 @@ func (m *Manager) nextID() string {
 
 // Create writes a new pipeline definition.
 func (m *Manager) Create(name string, schedule string, webhookURL string, loopCount *int) (*Pipeline, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	all, err := m.All()
 	if err != nil {
 		return nil, err
@@ -150,6 +154,8 @@ func (m *Manager) Create(name string, schedule string, webhookURL string, loopCo
 
 // Delete removes a pipeline and its associated run data.
 func (m *Manager) Delete(id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	p, err := m.readPipeline(id)
 	if err != nil {
 		return err
@@ -204,6 +210,8 @@ func (m *Manager) All() ([]Pipeline, error) {
 
 // AddTask appends a task to the pipeline's task list. The task must exist.
 func (m *Manager) AddTask(pipelineID, taskName string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	p, err := m.readPipeline(pipelineID)
 	if err != nil {
 		return err
@@ -220,6 +228,8 @@ func (m *Manager) AddTask(pipelineID, taskName string) error {
 
 // RemoveTask removes a task from the pipeline's task list by its index.
 func (m *Manager) RemoveTask(pipelineID string, taskIndex int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	p, err := m.readPipeline(pipelineID)
 	if err != nil {
 		return err
@@ -236,6 +246,8 @@ func (m *Manager) RemoveTask(pipelineID string, taskIndex int) error {
 
 // ReorderTasks sets the task list to a new order using old indices, preserving configs.
 func (m *Manager) ReorderTasks(pipelineID string, indices []int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	p, err := m.readPipeline(pipelineID)
 	if err != nil {
 		return err
@@ -267,6 +279,10 @@ func (m *Manager) ReorderTasks(pipelineID string, indices []int) error {
 }
 
 // SetStatus updates the pipeline status.
+// No mutex: only called from runner's per-pipeline goroutine (runLoop/RecoverOnStartup),
+// which serializes status writes per pipeline. Must not lock to avoid deadlock with
+// runner.mu (Start/ContinueRun hold runner.mu → SetStatus; Delete holds pipeline.mu →
+// IsRunning holds runner.mu).
 func (m *Manager) SetStatus(id, status string) error {
 	p, err := m.readPipeline(id)
 	if err != nil {
@@ -278,6 +294,8 @@ func (m *Manager) SetStatus(id, status string) error {
 
 // SetSchedule updates the cron schedule for a pipeline. Empty string disables scheduling.
 func (m *Manager) SetSchedule(id, schedule string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	p, err := m.readPipeline(id)
 	if err != nil {
 		return err
@@ -292,6 +310,8 @@ func (m *Manager) SetSchedule(id, schedule string) error {
 // SetWebhook updates the webhook URL for pipeline completion notifications.
 // Empty string disables notifications.
 func (m *Manager) SetWebhook(id, webhookURL string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	p, err := m.readPipeline(id)
 	if err != nil {
 		return err
@@ -306,6 +326,8 @@ func (m *Manager) SetWebhook(id, webhookURL string) error {
 // SetLoopCount updates the loop count for a pipeline. nil disables looping.
 // 0 = loop forever, N > 0 = execute N times.
 func (m *Manager) SetLoopCount(id string, loopCount *int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if loopCount != nil && *loopCount < 0 {
 		return fmt.Errorf("loop_count must be >= 0")
 	}
@@ -324,6 +346,8 @@ func (m *Manager) SetLoopCount(id string, loopCount *int) error {
 // Pass nil for pointer fields to inherit the task default.
 // onTimeout, when non-nil, must be "skip" or "fail".
 func (m *Manager) SetTaskConfig(pipelineID string, taskIndex int, timeoutSeconds *int, onTimeout *string, continueOnFailure *bool, retryCount *int, stage *string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if onTimeout != nil && *onTimeout != "skip" && *onTimeout != "fail" {
 		return fmt.Errorf("on_timeout must be \"skip\", \"fail\", or null to inherit")
 	}
@@ -357,6 +381,8 @@ func (m *Manager) SetTaskConfig(pipelineID string, taskIndex int, timeoutSeconds
 
 // SetTasks replaces the entire task list for a pipeline. Used for reorder + stage changes.
 func (m *Manager) SetTasks(pipelineID string, tasks []TaskRef) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	p, err := m.readPipeline(pipelineID)
 	if err != nil {
 		return err

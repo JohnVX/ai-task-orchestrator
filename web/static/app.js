@@ -298,7 +298,7 @@ async function refreshCanvas() {
         lastRunStatus = runs[0].status;
         const instances = await api.getRun(runs[0].run_id);
         instances.forEach(inst => {
-          if (inst.status !== 'success' && inst.status !== 'pending' && inst.status !== 'skipped') {
+          if (highlightIdx === -1 && inst.status !== 'success' && inst.status !== 'pending' && inst.status !== 'skipped') {
             highlightIdx = inst.index;
           }
           taskTimings[inst.index] = {
@@ -392,7 +392,7 @@ function renderPipelineTasks(pipeline, tasks, runningTasks, runningStageIdx, hig
   let si = 0;
   for (let i = 0; i < tasks.length; i++) {
     const st = tasks[i].stage || '';
-    if (i > 0 && st !== (tasks[i-1].stage || '')) si++;
+    if (i > 0 && (st === '' || st !== (tasks[i-1].stage || ''))) si++;
     taskStageIdx[i] = si;
   }
 

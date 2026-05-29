@@ -306,6 +306,9 @@ func TestUploadLLMPromptTask(t *testing.T) {
 	if m.StopCommand != "" {
 		t.Fatalf("expected empty stop_command for llm-prompt, got %q", m.StopCommand)
 	}
+	if m.LLMAgent != "claude-code" {
+		t.Fatalf("expected llm_agent=claude-code default, got %q", m.LLMAgent)
+	}
 }
 
 func TestUploadLLMPromptMissingPromptMD(t *testing.T) {
@@ -319,6 +322,23 @@ func TestUploadLLMPromptMissingPromptMD(t *testing.T) {
 	m := decodeMap(t, resp)
 	if !strings.Contains(m["error"].(string), "prompt.md") {
 		t.Fatalf("expected error about missing prompt.md, got: %v", m["error"])
+	}
+}
+
+func TestUploadLLMPromptWithExplicitAgent(t *testing.T) {
+	h := newTestHandler(t)
+	path := makeTar(t, "llm-agent-exp", map[string]string{
+		"prompt.md":                 "Test.",
+		"for-task-orchestrator.txt": "type: llm-prompt\nagent: opencode",
+	})
+	resp := uploadTaskViaMultipart(t, h, path)
+	mustStatus(t, resp, 201)
+	m := decodeJSON[task.Meta](t, resp)
+	if m.Type != task.TypeLLMPrompt {
+		t.Fatalf("expected type %q, got %q", task.TypeLLMPrompt, m.Type)
+	}
+	if m.LLMAgent != "opencode" {
+		t.Fatalf("expected llm_agent=opencode, got %q", m.LLMAgent)
 	}
 }
 
@@ -386,6 +406,31 @@ func TestGetTaskNonExistent(t *testing.T) {
 	mustStatus(t, resp, 404)
 }
 
+func TestGetLLMTaskDetailHasLLMAgent(t *testing.T) {
+	h := newTestHandler(t)
+	path := makeTar(t, "llm-detail", map[string]string{
+		"prompt.md":                 "Test.",
+		"for-task-orchestrator.txt": "type: llm-prompt",
+	})
+	resp := uploadTaskViaMultipart(t, h, path)
+	mustStatus(t, resp, 201)
+
+	resp = doRequest(t, h, "GET", "/api/tasks/llm-detail", nil)
+	mustStatus(t, resp, 200)
+	m := decodeMap(t, resp)
+	meta := m["meta"].(map[string]interface{})
+	if meta["llm_agent"].(string) != "claude-code" {
+		t.Fatalf("expected llm_agent=claude-code, got %v", meta["llm_agent"])
+	}
+	if meta["type"].(string) != "llm-prompt" {
+		t.Fatalf("expected type=llm-prompt, got %v", meta["type"])
+	}
+	// LLM task should have empty run_command and stop_command
+	if v, ok := meta["run_command"]; ok && v != "" {
+		t.Fatalf("expected empty run_command for llm-prompt, got %v", v)
+	}
+}
+
 func TestUpdateTaskConfig(t *testing.T) {
 	h := newTestHandler(t)
 	createTestTask(t, h, "config-task", "#!/bin/sh\necho ok\n")
@@ -422,6 +467,69 @@ func TestUpdateTaskNonExistent(t *testing.T) {
 		"run_command": "./x.sh",
 	})
 	mustStatus(t, resp, 404)
+}
+
+func TestUpdateTaskConfigLLMAgent(t *testing.T) {
+	h := newTestHandler(t)
+	// Upload an LLM task
+	path := makeTar(t, "llm-agent-cfg", map[string]string{
+		"prompt.md":                 "Test prompt.",
+		"for-task-orchestrator.txt": "type: llm-prompt",
+	})
+	resp := uploadTaskViaMultipart(t, h, path)
+	mustStatus(t, resp, 201)
+
+	// Verify default agent
+	resp = doRequest(t, h, "GET", "/api/tasks/llm-agent-cfg", nil)
+	mustStatus(t, resp, 200)
+	m := decodeMap(t, resp)
+	meta := m["meta"].(map[string]interface{})
+	if meta["llm_agent"].(string) != "claude-code" {
+		t.Fatalf("expected default llm_agent=claude-code, got %v", meta["llm_agent"])
+	}
+
+	// Update to opencode
+	resp = doRequest(t, h, "PUT", "/api/tasks/llm-agent-cfg", map[string]interface{}{
+		"llm_agent": "opencode",
+	})
+	mustStatus(t, resp, 200)
+
+	// Verify change
+	resp = doRequest(t, h, "GET", "/api/tasks/llm-agent-cfg", nil)
+	mustStatus(t, resp, 200)
+	m = decodeMap(t, resp)
+	meta = m["meta"].(map[string]interface{})
+	if meta["llm_agent"].(string) != "opencode" {
+		t.Fatalf("expected llm_agent=opencode, got %v", meta["llm_agent"])
+	}
+
+	// Empty string should preserve existing value
+	resp = doRequest(t, h, "PUT", "/api/tasks/llm-agent-cfg", map[string]interface{}{
+		"llm_agent": "",
+	})
+	mustStatus(t, resp, 200)
+
+	resp = doRequest(t, h, "GET", "/api/tasks/llm-agent-cfg", nil)
+	mustStatus(t, resp, 200)
+	m = decodeMap(t, resp)
+	meta = m["meta"].(map[string]interface{})
+	if meta["llm_agent"].(string) != "opencode" {
+		t.Fatalf("expected llm_agent preserved as opencode, got %v", meta["llm_agent"])
+	}
+
+	// Setting llm_agent on a self-contained task should not add the field
+	createTestTask(t, h, "exe-task", "#!/bin/sh\necho ok\n")
+	resp = doRequest(t, h, "PUT", "/api/tasks/exe-task", map[string]interface{}{
+		"llm_agent": "opencode",
+	})
+	mustStatus(t, resp, 200)
+	resp = doRequest(t, h, "GET", "/api/tasks/exe-task", nil)
+	mustStatus(t, resp, 200)
+	m = decodeMap(t, resp)
+	meta = m["meta"].(map[string]interface{})
+	if _, exists := meta["llm_agent"]; !exists {
+		t.Fatal("expected llm_agent field for self-contained task after setting it")
+	}
 }
 
 func TestDeleteTaskReferencedByPipeline(t *testing.T) {
