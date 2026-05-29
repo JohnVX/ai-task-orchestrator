@@ -2,12 +2,12 @@
 
 轻量级任务编排与运行管理平台。将任意可执行程序打包为 task，拖拽编排为 pipeline，支持 stage 内并行、stage 间串行执行，自动管理数据传递。
 
-**单二进制部署** — Go 编译，零运行时依赖。**内置 LLM Agent** — `llm-prompt` 类型 task 由 Claude Code 直接执行。
+**单二进制部署** — Go 编译，零运行时依赖。**内置 LLM Agent** — `llm-prompt` 类型 task 由 LLM Agent 直接执行，支持 `claude-code`（Claude CLI）和 `opencode`（OpenCode CLI）两种 agent。
 
 ## 设计原则
 
 - **舞台与演员分离**：ai-task-orchestrator 提供"舞台和调度"，task 是"演员"。支持 `self-contained`（自包含可执行脚本）和 `llm-prompt`（LLM 提示词任务）两种 task 类型。
-- **Agent 可替换**：LLM Agent 通过接口抽象，`--llm-agent` 指定。找不到 agent 时仅警告，不影响 self-contained 任务正常运行。
+- **Agent 可替换**：LLM Agent 通过接口抽象，`--llm-agent` 指定（`claude-code` 或 `opencode`）。找不到 agent 时仅警告，不影响 self-contained 任务正常运行。
 
 ## 界面截图
 
@@ -36,7 +36,7 @@ go build -o ai-task-orchestrator .
 | `-data` | `./data` | 数据目录 |
 | `-log-level` | `info` | 日志级别: debug / info / warn / error |
 | `-max-runs` | `100` | 每条 pipeline 最大保留 run 数量，超出删最早的 (0=不限制) |
-| `-llm-agent` | `claude-code` | LLM 提示词任务使用的 agent，目前仅支持 `claude-code` |
+| `-llm-agent` | `claude-code` | LLM 提示词任务使用的 agent：`claude-code`（Claude CLI `-p` 模式）或 `opencode`（OpenCode CLI `run` 模式） |
 
 ## 核心概念
 

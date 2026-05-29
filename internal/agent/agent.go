@@ -22,6 +22,7 @@ type Agent interface {
 
 var registry = map[string]Agent{
 	"claude-code": &claudeCodeAgent{},
+	"opencode":    &opencodeAgent{},
 }
 
 // Register adds an agent to the registry.
@@ -59,9 +60,26 @@ func (a *claudeCodeAgent) BuildCommand(promptFile, workDir string) (*exec.Cmd, e
 	if err != nil {
 		return nil, fmt.Errorf("read prompt file: %w", err)
 	}
-	// Prepend directive to ensure Claude executes immediately rather than asking questions.
 	prefix := "请立即执行以下任务，用 shell 命令直接完成，不要提问，做完就退出。\n\n"
 	cmd := exec.Command("claude", "-p", prefix+string(content))
+	cmd.Dir = workDir
+	return cmd, nil
+}
+
+type opencodeAgent struct{}
+
+func (a *opencodeAgent) Name() string { return "opencode" }
+
+func (a *opencodeAgent) BuildCommand(promptFile, workDir string) (*exec.Cmd, error) {
+	if _, err := exec.LookPath("opencode"); err != nil {
+		return nil, fmt.Errorf("opencode not found in PATH: %w", err)
+	}
+	content, err := os.ReadFile(promptFile)
+	if err != nil {
+		return nil, fmt.Errorf("read prompt file: %w", err)
+	}
+	prefix := "Execute the following task immediately using shell commands. Do not ask questions. Complete and exit.\n\n"
+	cmd := exec.Command("opencode", "run", "--dangerously-skip-permissions", "--dir", workDir, prefix+string(content))
 	cmd.Dir = workDir
 	return cmd, nil
 }
