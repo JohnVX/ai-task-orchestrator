@@ -1,6 +1,12 @@
 # ai-task-orchestrator
 
-轻量级任务编排与运行管理平台。将任意可执行程序打包为 task，拖拽编排为 pipeline，支持 stage 内并行、stage 间串行执行，自动管理数据传递。
+**ai-task-orchestrator 是一个面向开发者和运维人员的轻量级任务编排与运行管理平台。** 你将任意可执行脚本打包为 task，在 Web UI 中拖拽编排为 pipeline，即可一键执行、定时调度、自动重试、失败恢复。
+
+适合什么人解决什么问题：
+
+- **个人开发者** — 替代 cron + shell 脚本的散养状态，可视化管理日常自动化任务（备份、巡检、构建）
+- **小团队内网** — 统一管理 CI/CD 之外的运维/审计/数据处理流程，零外部依赖，单二进制部署
+- **LLM 工作流编排** — 内置 `llm-prompt` 任务类型，将 Claude Code / OpenCode 编排进 pipeline，实现 AI 辅助的代码审查、安全审计等场景
 
 **单二进制部署** — Go 编译，零运行时依赖。**内置 LLM Agent** — `llm-prompt` 类型 task 由 LLM Agent 直接执行，支持 `claude-code`（Claude CLI）和 `opencode`（OpenCode CLI）两种 agent。
 
@@ -8,6 +14,43 @@
 
 - **舞台与演员分离**：ai-task-orchestrator 提供"舞台和调度"，task 是"演员"。支持 `self-contained`（自包含可执行脚本）和 `llm-prompt`（LLM 提示词任务）两种 task 类型。
 - **Agent 可替换**：LLM Agent 通过接口抽象，`--llm-agent` 指定全局默认 agent（`claude-code` 或 `opencode`）。每个 `llm-prompt` task 可在左侧配置面板独立选择 agent（下拉框，可选 claude-code 或 opencode），覆盖全局设置。右侧 pipeline 配置弹窗仅展示 agent（不可编辑）。找不到 agent 时仅警告，不影响 self-contained 任务正常运行。
+
+## 架构概览
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                      Web UI (vanilla JS)                     │
+│  左侧 task 列表  │  中间 pipeline 画布  │  右侧运行面板      │
+└───────────────────────┬─────────────────────────────────────┘
+                        │ HTTP REST API
+                        ▼
+┌─────────────────────────────────────────────────────────────┐
+│                        HTTP Server                           │
+│            net/http ServeMux + html/template + embed         │
+└──────┬──────────┬──────────────┬────────────────┬───────────┘
+       │          │              │                │
+       ▼          ▼              ▼                ▼
+┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────────────┐
+│   Task   │ │ Pipeline │ │ Scheduler│ │     Runner       │
+│ Manager  │ │ Manager  │ │ (cron)   │ │(pipeline 执行器)  │
+│          │ │          │ │          │ │  + 双缓冲数据传递 │
+│ 上传/查  │ │ CRUD/    │ │30s tick  │ │  + 超时/重试      │
+│ 询/删除  │ │ 编排/    │ │匹配cron  │ │  + 并发stage      │
+│ 自描述   │ │ 导入导出 │ │触发执行  │ │  + LLM Agent      │
+│ 解析     │ │          │ │          │ │  + 崩溃恢复       │
+└────┬─────┘ └────┬─────┘ └──────────┘ └────────┬───────────┘
+     │            │                             │
+     ▼            ▼                             ▼
+┌─────────────────────────────────────────────────────────────┐
+│                     磁盘存储 (data dir)                       │
+│  tasks/  task_meta/  pipelines/  runs/  orchestrator.log    │
+│  所有 JSON 原子写入 (.tmp + rename)，崩溃不丢数据            │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**请求流**：浏览器操作 → HTTP API → Manager 层处理逻辑 → 磁盘持久化 / Runner 执行
+
+**关键设计**：Task Manager 只管理 task 元数据和文件；Pipeline Manager 编排 task 引用关系；Runner 负责实际执行，通过双缓冲目录传递 stage 间数据；Scheduler 独立 goroutine 定期扫描 pipeline 配置触发定时任务。
 
 ## 安全声明
 
@@ -23,9 +66,19 @@
 
 ## 界面截图
 
-![主界面](images/web-page-001.png)
+![主界面](images/webpage-20260530.png)
 
 *流水线编排主界面 — 左侧 task 列表，右侧 pipeline 可视编排链（含并行 stage 紫色分组框）*
+
+### 界面布局说明
+
+打开浏览器访问 `http://localhost:8080` 后，页面分三个区域：
+
+- **左侧边栏** — Task 列表。显示所有已上传的 task，每项包含名称和类型 badge（`self-contained` 蓝色 / `llm-prompt` 绿色）。展开可查看 README 内容和配置面板（命令、超时、agent 等）。底部有"上传 task"按钮。
+- **中间区域** — Pipeline 管理。上方为创建/导入区域（输入名称 → 创建流水线），下方为流水线列表。选中某条流水线后，中间切换为 pipeline 编排视图：task 实例按顺序排列，stage 分组以紫色框展示，可拖拽排序。单击 task 实例弹出配置弹窗，× 按钮移除实例。下方为运行历史表格，彩色标示每次 run 的状态。
+- **右侧"运行"面板** — 当前正在运行的流水线状态卡片，显示进度。此面板随运行状态自动更新，无运行时为空。
+
+底部栏显示版本号和进程 PID。
 
 ## 快速开始
 
@@ -49,6 +102,43 @@ go build -o ai-task-orchestrator .
 | `-log-level` | `info` | 日志级别: debug / info / warn / error |
 | `-max-runs` | `100` | 每条 pipeline 最大保留 run 数量，超出删最早的 (0=不限制) |
 | `-llm-agent` | `claude-code` | LLM 提示词任务使用的 agent：`claude-code`（Claude CLI `-p` 模式）或 `opencode`（OpenCode CLI `run` 模式） |
+
+### 5 分钟上手
+
+```bash
+# 1. 构建
+go build -o ai-task-orchestrator .
+
+# 2. 启动
+./ai-task-orchestrator &
+# 打开浏览器访问 http://localhost:8080
+
+# 3. 创建一个简单的 task
+mkdir -p /tmp/my-task
+cat > /tmp/my-task/run.sh << 'SCRIPT'
+#!/bin/sh
+echo "Hello, it's $(date)"
+echo "TASK_DATA_READ=$TASK_DATA_READ"
+echo "TASK_DATA_WRITE=$TASK_DATA_WRITE"
+SCRIPT
+chmod +x /tmp/my-task/run.sh
+cd /tmp && tar cf my-task.tar my-task/ && cd -
+
+# 4. 上传 task
+curl -F "file=@/tmp/my-task.tar" http://localhost:8080/api/tasks
+
+# 5. 创建 pipeline 并关联 task
+PIPE_ID=$(curl -s -X POST http://localhost:8080/api/pipelines \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"hello-pipe","tasks":[{"name":"my-task"}]}' | grep -o '"id":"[^"]*"' | cut -d'"' -f4)
+echo "Pipeline created: $PIPE_ID"
+
+# 6. 运行 pipeline
+curl -s -X POST "http://localhost:8080/api/pipelines/$PIPE_ID/start"
+
+# 7. 查看运行结果（浏览器刷新或 curl）
+curl -s http://localhost:8080/api/runs
+```
 
 ## 核心概念
 
@@ -453,6 +543,20 @@ web/
   static/sortable.min.js — SortableJS 1.15.6 (vendored)
 ```
 
+## 部署指南
+
+单二进制部署，拷贝即运行：
+
+```bash
+# 目标服务器上
+scp ai-task-orchestrator user@server:/opt/orchestrator/
+ssh user@server
+cd /opt/orchestrator
+./ai-task-orchestrator -data ./data -port 8080
+```
+
+生产环境建议通过反向代理（nginx/caddy）加 TLS，不要直接暴露端口到公网。服务无外部依赖，进程挂了重启即可，定时调度在内存中维护，重启后不追补遗漏的执行。
+
 ## CI
 
 每次 push/PR 到 main 分支自动执行 GitHub Actions 工作流（`.github/workflows/test.yml`），运行全量测试 + 竞态检测：
@@ -489,6 +593,18 @@ go test -race ./... -count=1 -parallel=8  # 竞态检测 ~24s（零 data race，
 - **日志轮转**：启动时 + 每 24h 定时轮转：超过 7 天的未压缩日志 gzip 压缩，超过 365 天的 `.gz` 删除。
 - **日志查看器**：界面上查看任务 stdout/stderr 和 run 事件日志，支持手动刷新和 60 秒自动刷新（默认关闭）。
 
+## 故障排查
+
+| 现象 | 排查步骤 |
+|---|---|
+| **启动后浏览器打不开** | 1. 确认进程在运行：`ps aux | grep orchestrator`<br>2. 确认端口监听：`lsof -i:8080`<br>3. 检查日志：`tail -f data/orchestrator.log` |
+| **上传 task 失败** | 1. 确认 tar 包名符合命名规则（字母/数字/下划线/连字符/点）<br>2. 检查服务端日志是否有 tar 解包错误<br>3. 确认 tar 包后缀为 `.tar`，非 `.tar.gz` 或 `.zip` |
+| **Pipeline 运行后 task 没执行** | 1. 检查 task 的 run_command 是否正确（默认 `./run.sh`）<br>2. 查看对应 run 目录下 task stdout/stderr 日志<br>3. 确认 run.sh 有可执行权限（tar 包内 `chmod +x`） |
+| **定时任务没触发** | 1. 确认 pipeline 的 `schedule` 字段是有效的 5 字段 cron<br>2. 确认 pipeline 状态为 `idle`（running 时不触发）<br>3. 确认当前时间匹配 cron 表达式<br>4. 调度器每 30 秒 tick 一次，同分钟只触发一次 |
+| **续跑不生效** | 1. 确认最新 run 中存在非成功的 task 实例（failed/timeout/stopped/crashed）<br>2. 全部成功的 run 不可续跑<br>3. 续跑复用同一 run 目录，检查 `runs/` 下对应目录是否被删除 |
+| **Webhook 没收到** | 1. 确认 pipeline 的 `webhook_url` 配置正确<br>2. 手动停止的 pipeline 不触发 webhook<br>3. 检查服务端日志是否有 POST 错误<br>4. Webhook 超时 10 秒，fire-and-forget，不重试 |
+| **数据/状态异常** | 1. 检查 `data/orchestrator_state.json` 是否异常<br>2. 重启服务触发崩溃恢复<br>3. 检查 `data/runs/` 下事件日志 `events.log` |
+
 ## 技术栈
 
 | 层 | 选型 |
@@ -497,10 +613,6 @@ go test -race ./... -count=1 -parallel=8  # 竞态检测 ~24s（零 data race，
 | 前端 | 服务端渲染（`html/template`）+ vanilla JS |
 | 拖拽 | SortableJS 1.15.6，vendor 单个 `.js` 文件进仓库，embed 进二进制 |
 | 部署 | 交叉编译单二进制，拷贝即运行，零运行时依赖 |
-
-## 后续扩展
-
-（暂无）
 
 ## License
 
