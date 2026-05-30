@@ -29,9 +29,26 @@ type Handler struct {
 	logger   *slog.Logger
 }
 
+const maxJSONBody = 1 << 20 // 1 MB limit for JSON request bodies
+
 // NewHandler creates a Handler.
 func NewHandler(tm *task.Manager, pm *pipeline.Manager, rm *runner.Manager, dataDir string, tmpl *template.Template, staticFS http.FileSystem, logger *slog.Logger) *Handler {
 	return &Handler{Task: tm, Pipeline: pm, Runner: rm, dataDir: dataDir, tmpl: tmpl, staticFS: staticFS, logger: logger}
+}
+
+func (h *Handler) tasksToRunTasks(p *pipeline.Pipeline) []runner.RunTask {
+	runTasks := make([]runner.RunTask, len(p.Tasks))
+	for i, ref := range p.Tasks {
+		runTasks[i] = runner.RunTask{
+			Name:              ref.Name,
+			TimeoutSeconds:    ref.TimeoutSeconds,
+			OnTimeout:         ref.OnTimeout,
+			ContinueOnFailure: ref.ContinueOnFailure,
+			RetryCount:        ref.RetryCount,
+			Stage:             ref.Stage,
+		}
+	}
+	return runTasks
 }
 
 // Router returns an http.Handler that serves all routes.
@@ -54,6 +71,8 @@ func (h *Handler) Router() http.Handler {
 	mux.HandleFunc("DELETE /api/pipelines/{id}", h.handleDeletePipeline)
 	mux.HandleFunc("POST /api/pipelines/{id}/start", h.handleStartPipeline)
 	mux.HandleFunc("POST /api/pipelines/{id}/stop", h.handleStopPipeline)
+	mux.HandleFunc("GET /api/pipelines/{id}/export", h.handleExportPipeline)
+	mux.HandleFunc("POST /api/pipelines/import", h.handleImportPipeline)
 
 	// Run routes
 	mux.HandleFunc("GET /api/runs", h.handleListRuns)
@@ -173,6 +192,7 @@ func (h *Handler) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
 		RetryCount        int    `json:"retry_count"`
 		LLMAgent          string `json:"llm_agent,omitempty"`
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBody)
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		h.writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
@@ -218,6 +238,95 @@ func (h *Handler) handleDownloadTask(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, tarPath)
 }
 
+func (h *Handler) handleExportPipeline(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	data, err := h.Pipeline.Export(id)
+	if err != nil {
+		if strings.Contains(err.Error(), "no such file") || strings.Contains(err.Error(), "not found") {
+			h.writeError(w, http.StatusNotFound, "pipeline not found")
+		} else {
+			h.writeError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="pipeline-%s.json"`, id))
+	w.Write(data)
+}
+
+func (h *Handler) handleImportPipeline(w http.ResponseWriter, r *http.Request) {
+	var raw []byte
+
+	contentType := r.Header.Get("Content-Type")
+	if strings.HasPrefix(contentType, "multipart/form-data") {
+		r.ParseMultipartForm(maxJSONBody)
+		file, _, err := r.FormFile("file")
+		if err != nil {
+			h.writeError(w, http.StatusBadRequest, "missing file field")
+			return
+		}
+		defer file.Close()
+		raw, err = io.ReadAll(file)
+		if err != nil {
+			h.writeError(w, http.StatusBadRequest, "cannot read file")
+			return
+		}
+	} else {
+		r.Body = http.MaxBytesReader(w, r.Body, maxJSONBody)
+		var err error
+		raw, err = io.ReadAll(r.Body)
+		if err != nil {
+			h.writeError(w, http.StatusBadRequest, "cannot read body")
+			return
+		}
+	}
+
+	var body struct {
+		Name       string              `json:"name"`
+		Tasks      []pipeline.TaskRef  `json:"tasks"`
+		Schedule   string              `json:"schedule"`
+		WebhookURL string              `json:"webhook_url"`
+		LoopCount  *int                `json:"loop_count,omitempty"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		h.writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	if strings.TrimSpace(body.Name) == "" {
+		h.writeError(w, http.StatusBadRequest, "pipeline name required")
+		return
+	}
+	body.Name = strings.TrimSpace(body.Name)
+	if body.Schedule != "" && !runner.ValidCron(body.Schedule) {
+		h.writeError(w, http.StatusBadRequest, "invalid cron expression")
+		return
+	}
+	for _, ref := range body.Tasks {
+		if !h.Task.Exists(ref.Name) {
+			h.writeError(w, http.StatusBadRequest, "task not found: "+ref.Name)
+			return
+		}
+	}
+
+	p, err := h.Pipeline.Create(body.Name, body.Schedule, body.WebhookURL, body.LoopCount)
+	if err != nil {
+		h.writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+
+	if len(body.Tasks) > 0 {
+		// Validate task names in SetTasks (already checked above, but SetTasks does its own check too)
+		if err := h.Pipeline.SetTasks(p.ID, body.Tasks); err != nil {
+			h.writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		p.Tasks = body.Tasks
+	}
+
+	h.logger.Info("pipeline imported", "id", p.ID, "name", p.Name, "task_count", len(p.Tasks))
+	writeJSON(w, http.StatusCreated, p)
+}
+
 // --- pipeline handlers ---
 
 func (h *Handler) handleListPipelines(w http.ResponseWriter, r *http.Request) {
@@ -239,10 +348,12 @@ func (h *Handler) handleCreatePipeline(w http.ResponseWriter, r *http.Request) {
 		WebhookURL string `json:"webhook_url"`
 		LoopCount  *int   `json:"loop_count,omitempty"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Name == "" {
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBody)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Name) == "" {
 		h.writeError(w, http.StatusBadRequest, "pipeline name required")
 		return
 	}
+	body.Name = strings.TrimSpace(body.Name)
 	if body.Schedule != "" && !runner.ValidCron(body.Schedule) {
 		h.writeError(w, http.StatusBadRequest, "invalid cron expression")
 		return
@@ -286,7 +397,7 @@ func (h *Handler) handleGetPipeline(w http.ResponseWriter, r *http.Request) {
 			OnTimeout:         ref.OnTimeout,
 			ContinueOnFailure: ref.ContinueOnFailure,
 			RetryCount:        ref.RetryCount,
-				Stage:             ref.Stage,
+			Stage:             ref.Stage,
 		}
 		if meta, err := h.Task.Get(ref.Name); err == nil {
 			info.Type = meta.Type
@@ -323,6 +434,7 @@ func (h *Handler) handleUpdatePipeline(w http.ResponseWriter, r *http.Request) {
 		Stage             *string            `json:"stage,omitempty"`
 		TaskRefs          []pipeline.TaskRef `json:"task_refs"`
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBody)
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		h.writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
@@ -348,7 +460,7 @@ func (h *Handler) handleUpdatePipeline(w http.ResponseWriter, r *http.Request) {
 		err = h.Pipeline.SetLoopCount(id, body.LoopCount)
 	case "set_task_config":
 		err = h.Pipeline.SetTaskConfig(id, body.TaskIndex, body.TimeoutSeconds, body.OnTimeout, body.ContinueOnFailure, body.RetryCount, body.Stage)
-		case "set_tasks":
+	case "set_tasks":
 			for _, ref := range body.TaskRefs {
 				if _, err := h.Task.Get(ref.Name); err != nil {
 					h.writeError(w, http.StatusBadRequest, "task not found: "+ref.Name)
@@ -394,18 +506,7 @@ func (h *Handler) handleStartPipeline(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusBadRequest, "pipeline has no tasks")
 		return
 	}
-	runTasks := make([]runner.RunTask, len(p.Tasks))
-	for i, ref := range p.Tasks {
-		runTasks[i] = runner.RunTask{
-			Name:              ref.Name,
-			TimeoutSeconds:    ref.TimeoutSeconds,
-			OnTimeout:         ref.OnTimeout,
-			ContinueOnFailure: ref.ContinueOnFailure,
-			RetryCount:        ref.RetryCount,
-				Stage:             ref.Stage,
-		}
-	}
-	runID, err := h.Runner.Start(id, runTasks, p.WebhookURL, p.Name, resolveLoopCount(p.LoopCount))
+	runID, err := h.Runner.Start(id, h.tasksToRunTasks(p), p.WebhookURL, p.Name, runner.ResolveLoopCount(p.LoopCount))
 	if err != nil {
 		h.writeError(w, http.StatusConflict, err.Error())
 		return
@@ -442,6 +543,7 @@ func (h *Handler) handleContinueRun(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		PipelineID string `json:"pipeline_id"`
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBody)
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.PipelineID == "" {
 		h.writeError(w, http.StatusBadRequest, "pipeline_id required")
 		return
@@ -451,18 +553,7 @@ func (h *Handler) handleContinueRun(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusNotFound, "pipeline not found")
 		return
 	}
-	runTasks := make([]runner.RunTask, len(p.Tasks))
-	for i, ref := range p.Tasks {
-		runTasks[i] = runner.RunTask{
-			Name:              ref.Name,
-			TimeoutSeconds:    ref.TimeoutSeconds,
-			OnTimeout:         ref.OnTimeout,
-			ContinueOnFailure: ref.ContinueOnFailure,
-			RetryCount:        ref.RetryCount,
-				Stage:             ref.Stage,
-		}
-	}
-	if err := h.Runner.ContinueRun(body.PipelineID, runID, runTasks, p.WebhookURL, p.Name); err != nil {
+	if err := h.Runner.ContinueRun(body.PipelineID, runID, h.tasksToRunTasks(p), p.WebhookURL, p.Name); err != nil {
 		h.writeError(w, http.StatusConflict, err.Error())
 		return
 	}
@@ -643,11 +734,4 @@ func (h *Handler) handleIndex(w http.ResponseWriter, r *http.Request) {
 // RecoverOnStartup is called by main to clean up stale locks.
 func (h *Handler) RecoverOnStartup() error {
 	return h.Runner.RecoverOnStartup()
-}
-
-func resolveLoopCount(lc *int) int {
-	if lc == nil {
-		return 1
-	}
-	return *lc
 }

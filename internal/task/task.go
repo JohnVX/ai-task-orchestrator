@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -40,13 +41,14 @@ type Manager struct {
 	tasksDir     string
 	taskMetaDir  string
 	pipelinesDir string
+	logger       *slog.Logger
 }
 
 // NewManager creates a Manager. It ensures required directories exist.
-func NewManager(tasksDir, taskMetaDir, pipelinesDir string) *Manager {
+func NewManager(tasksDir, taskMetaDir, pipelinesDir string, logger *slog.Logger) *Manager {
 	os.MkdirAll(tasksDir, 0755)
 	os.MkdirAll(taskMetaDir, 0755)
-	return &Manager{tasksDir: tasksDir, taskMetaDir: taskMetaDir, pipelinesDir: pipelinesDir}
+	return &Manager{tasksDir: tasksDir, taskMetaDir: taskMetaDir, pipelinesDir: pipelinesDir, logger: logger}
 }
 
 // --- helpers ---
@@ -69,14 +71,23 @@ func (m *Manager) readMeta(name string) (*Meta, error) {
 }
 
 func (m *Manager) writeMeta(meta *Meta) error {
-	f, err := os.Create(m.metaPath(meta.Name))
+	tmpPath := m.metaPath(meta.Name) + ".tmp"
+	f, err := os.Create(tmpPath)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
 	enc := json.NewEncoder(f)
 	enc.SetIndent("", "  ")
-	return enc.Encode(meta)
+	if err := enc.Encode(meta); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	return os.Rename(tmpPath, m.metaPath(meta.Name))
 }
 
 // --- public methods ---
@@ -433,6 +444,9 @@ func (m *Manager) All() ([]Meta, error) {
 		name := strings.TrimSuffix(e.Name(), ".json")
 		meta, err := m.readMeta(name)
 		if err != nil {
+			if m.logger != nil {
+				m.logger.Warn("task: skipping unreadable meta file", "name", name, "error", err)
+			}
 			continue
 		}
 		tasks = append(tasks, *meta)

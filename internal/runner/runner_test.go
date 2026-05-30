@@ -16,6 +16,7 @@ import (
 )
 
 func TestWriteTaskMetaWithIndex(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	tests := []struct {
@@ -58,6 +59,7 @@ func TestWriteTaskMetaWithIndex(t *testing.T) {
 }
 
 func TestRunInfoWithDuplicateTasks(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	runDir := filepath.Join(dir, "run-test")
 	os.MkdirAll(runDir, 0755)
@@ -113,6 +115,7 @@ func TestRunInfoWithDuplicateTasks(t *testing.T) {
 }
 
 func TestRunInfoSkipsTaskDataDirs(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	runDir := filepath.Join(dir, "run-skip")
 	os.MkdirAll(runDir, 0755)
@@ -128,6 +131,7 @@ func TestRunInfoSkipsTaskDataDirs(t *testing.T) {
 }
 
 func TestRunInfoEmptyDir(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	runDir := filepath.Join(dir, "run-empty")
 	os.MkdirAll(runDir, 0755)
@@ -139,6 +143,7 @@ func TestRunInfoEmptyDir(t *testing.T) {
 }
 
 func TestRunInfoMixedTaskAndDataDirs(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	runDir := filepath.Join(dir, "run-mixed")
 	os.MkdirAll(runDir, 0755)
@@ -167,6 +172,7 @@ func TestRunInfoMixedTaskAndDataDirs(t *testing.T) {
 }
 
 func TestRunLogByIndex(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	runDir := filepath.Join(dir, "run-log")
 	os.MkdirAll(runDir, 0755)
@@ -205,6 +211,7 @@ func TestRunLogByIndex(t *testing.T) {
 }
 
 func TestRunLogNonExistentRun(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	_, _, err := readLogByPath(dir, "no-such-task", 0)
 	if err == nil {
@@ -213,6 +220,7 @@ func TestRunLogNonExistentRun(t *testing.T) {
 }
 
 func TestRunLogSomeFilesMissing(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	runDir := filepath.Join(dir, "run-partial")
 	os.MkdirAll(runDir, 0755)
@@ -235,6 +243,7 @@ func TestRunLogSomeFilesMissing(t *testing.T) {
 }
 
 func TestMarkTaskWithIndex(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	taskDir := filepath.Join(dir, "test-mark-3")
 	os.MkdirAll(taskDir, 0755)
@@ -261,6 +270,7 @@ func TestMarkTaskWithIndex(t *testing.T) {
 }
 
 func TestComputeRunStatusWithDuplicates(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		statuses []string
@@ -352,7 +362,7 @@ func TestRetryOnTimeout(t *testing.T) {
 	taskName := "sleepy"
 	taskDir := filepath.Join(tasksDir, taskName)
 	os.MkdirAll(taskDir, 0755)
-	os.WriteFile(filepath.Join(taskDir, "run.sh"), []byte("#!/bin/sh\nsleep 10\necho done\n"), 0755)
+	os.WriteFile(filepath.Join(taskDir, "run.sh"), []byte("#!/bin/sh\nsleep 3\necho done\n"), 0755)
 
 	// Write task meta
 	meta := task.Meta{
@@ -367,8 +377,8 @@ func TestRetryOnTimeout(t *testing.T) {
 	}
 	writeJSONFile(t, filepath.Join(taskMetaDir, taskName+".json"), meta)
 
-	taskMgr := task.NewManager(tasksDir, taskMetaDir, pipelinesDir)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	taskMgr := task.NewManager(tasksDir, taskMetaDir, pipelinesDir, logger)
 	mgr := NewManager(runsDir, dataDir, taskMgr, logger, agent.MustGet("claude-code"))
 	mgr.SetPipelineStatusSetter(&stubStatusSetter{})
 
@@ -381,7 +391,7 @@ func TestRetryOnTimeout(t *testing.T) {
 	}
 
 	// Wait for pipeline to finish (2 attempts, 1s timeout each + overhead)
-	time.Sleep(5 * time.Second)
+	time.Sleep(3 * time.Second)
 
 	// Verify retry entries in events log
 	events, err := mgr.RunEvents(runID)
@@ -436,8 +446,8 @@ func TestNoRetryOnNonTimeoutFailure(t *testing.T) {
 	}
 	writeJSONFile(t, filepath.Join(taskMetaDir, taskName+".json"), meta)
 
-	taskMgr := task.NewManager(tasksDir, taskMetaDir, pipelinesDir)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	taskMgr := task.NewManager(tasksDir, taskMetaDir, pipelinesDir, logger)
 	mgr := NewManager(runsDir, dataDir, taskMgr, logger, agent.MustGet("claude-code"))
 	mgr.SetPipelineStatusSetter(&stubStatusSetter{})
 
@@ -495,7 +505,7 @@ if [ -f "$MARKER" ]; then
   exit 0
 fi
 touch "$MARKER"
-sleep 10
+sleep 3
 echo "first attempt timeout"
 `
 	os.WriteFile(filepath.Join(taskDir, "run.sh"), []byte(script), 0755)
@@ -512,8 +522,8 @@ echo "first attempt timeout"
 	}
 	writeJSONFile(t, filepath.Join(taskMetaDir, taskName+".json"), meta)
 
-	taskMgr := task.NewManager(tasksDir, taskMetaDir, pipelinesDir)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	taskMgr := task.NewManager(tasksDir, taskMetaDir, pipelinesDir, logger)
 	mgr := NewManager(runsDir, dataDir, taskMgr, logger, agent.MustGet("claude-code"))
 	mgr.SetPipelineStatusSetter(&stubStatusSetter{})
 
@@ -525,7 +535,7 @@ echo "first attempt timeout"
 		t.Fatalf("Start: %v", err)
 	}
 
-	time.Sleep(5 * time.Second)
+	time.Sleep(3 * time.Second)
 
 	events, err := mgr.RunEvents(runID)
 	if err != nil {
@@ -547,6 +557,7 @@ echo "first attempt timeout"
 // ===== resolveRemainingLoop =====
 
 func TestResolveRemainingLoopNoFile(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	remaining, iteration, total := resolveRemainingLoop(dir)
 	if remaining != 1 || iteration != 1 || total != 1 {
@@ -555,6 +566,7 @@ func TestResolveRemainingLoopNoFile(t *testing.T) {
 }
 
 func TestResolveRemainingLoopFirstIteration(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "iteration.json"), []byte(`{"iteration":1,"loop_total":5}`), 0644)
 	remaining, iteration, total := resolveRemainingLoop(dir)
@@ -564,6 +576,7 @@ func TestResolveRemainingLoopFirstIteration(t *testing.T) {
 }
 
 func TestResolveRemainingLoopMidIteration(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "iteration.json"), []byte(`{"iteration":3,"loop_total":5}`), 0644)
 	remaining, iteration, total := resolveRemainingLoop(dir)
@@ -573,6 +586,7 @@ func TestResolveRemainingLoopMidIteration(t *testing.T) {
 }
 
 func TestResolveRemainingLoopLastIteration(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "iteration.json"), []byte(`{"iteration":5,"loop_total":5}`), 0644)
 	remaining, iteration, total := resolveRemainingLoop(dir)
@@ -582,6 +596,7 @@ func TestResolveRemainingLoopLastIteration(t *testing.T) {
 }
 
 func TestResolveRemainingLoopForever(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "iteration.json"), []byte(`{"iteration":7,"loop_total":0}`), 0644)
 	remaining, iteration, total := resolveRemainingLoop(dir)
@@ -591,6 +606,7 @@ func TestResolveRemainingLoopForever(t *testing.T) {
 }
 
 func TestResolveRemainingLoopCorruptFile(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "iteration.json"), []byte(`garbage`), 0644)
 	remaining, iteration, total := resolveRemainingLoop(dir)
@@ -600,6 +616,7 @@ func TestResolveRemainingLoopCorruptFile(t *testing.T) {
 }
 
 func TestResolveRemainingLoopNegative(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "iteration.json"), []byte(`{"iteration":0,"loop_total":2}`), 0644)
 	remaining, iteration, total := resolveRemainingLoop(dir)
@@ -611,6 +628,7 @@ func TestResolveRemainingLoopNegative(t *testing.T) {
 // ===== runSeq =====
 
 func TestRunSeq(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		runID string
 		want  int
@@ -635,13 +653,14 @@ func TestRunSeq(t *testing.T) {
 // ===== DeleteRun =====
 
 func TestDeleteRunUnit(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	dataDir := filepath.Join(dir, "data")
 	runsDir := filepath.Join(dataDir, "runs")
 	os.MkdirAll(runsDir, 0755)
 
-	taskMgr := task.NewManager(filepath.Join(dataDir, "tasks"), filepath.Join(dataDir, "task_meta"), filepath.Join(dataDir, "pipelines"))
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	taskMgr := task.NewManager(filepath.Join(dataDir, "tasks"), filepath.Join(dataDir, "task_meta"), filepath.Join(dataDir, "pipelines"), logger)
 	mgr := NewManager(runsDir, dataDir, taskMgr, logger, agent.MustGet("claude-code"))
 
 	// Non-existent run
@@ -675,12 +694,13 @@ func TestDeleteRunUnit(t *testing.T) {
 // ===== RunDirSize =====
 
 func TestRunDirSize(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	runsDir := filepath.Join(dir, "runs")
 	os.MkdirAll(runsDir, 0755)
 
-	taskMgr := task.NewManager(filepath.Join(dir, "tasks"), filepath.Join(dir, "task_meta"), filepath.Join(dir, "pipelines"))
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	taskMgr := task.NewManager(filepath.Join(dir, "tasks"), filepath.Join(dir, "task_meta"), filepath.Join(dir, "pipelines"), logger)
 	mgr := NewManager(runsDir, dir, taskMgr, logger, agent.MustGet("claude-code"))
 
 	runDir := filepath.Join(runsDir, "run-p1-000001")
@@ -749,8 +769,8 @@ func TestLoopExecution(t *testing.T) {
 	}
 	writeJSONFile(t, filepath.Join(taskMetaDir, taskName+".json"), meta)
 
-	taskMgr := task.NewManager(tasksDir, taskMetaDir, pipelinesDir)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	taskMgr := task.NewManager(tasksDir, taskMetaDir, pipelinesDir, logger)
 	mgr := NewManager(runsDir, dataDir, taskMgr, logger, agent.MustGet("claude-code"))
 	mgr.SetPipelineStatusSetter(&stubStatusSetter{})
 
@@ -810,8 +830,8 @@ func TestRecoverOnStartupMarksTasksCrashed(t *testing.T) {
 	}
 	writeJSONFile(t, filepath.Join(taskMetaDir, taskName+".json"), meta)
 
-	taskMgr := task.NewManager(tasksDir, taskMetaDir, pipelinesDir)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	taskMgr := task.NewManager(tasksDir, taskMetaDir, pipelinesDir, logger)
 	mgr := NewManager(runsDir, dataDir, taskMgr, logger, agent.MustGet("claude-code"))
 	mgr.SetPipelineStatusSetter(&stubStatusSetter{})
 
@@ -872,8 +892,8 @@ func TestRecoverOnStartupRejectsAliveProcess(t *testing.T) {
 		os.MkdirAll(filepath.Join(dataDir, d), 0755)
 	}
 
-	taskMgr := task.NewManager(filepath.Join(dataDir, "tasks"), filepath.Join(dataDir, "task_meta"), filepath.Join(dataDir, "pipelines"))
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	taskMgr := task.NewManager(filepath.Join(dataDir, "tasks"), filepath.Join(dataDir, "task_meta"), filepath.Join(dataDir, "pipelines"), logger)
 	mgr := NewManager(filepath.Join(dataDir, "runs"), dataDir, taskMgr, logger, agent.MustGet("claude-code"))
 
 	// Write state with our own PID (alive)
@@ -895,6 +915,7 @@ func TestRecoverOnStartupRejectsAliveProcess(t *testing.T) {
 // ===== Cron Matching Tests =====
 
 func TestMatchCron(t *testing.T) {
+	t.Parallel()
 	// Use a known time: Monday 2026-05-25 09:30:00 UTC
 	ref := time.Date(2026, 5, 25, 9, 30, 0, 0, time.UTC)
 
@@ -936,6 +957,7 @@ func TestMatchCron(t *testing.T) {
 }
 
 func TestMatchCronStepFromNumber(t *testing.T) {
+	t.Parallel()
 	// Regression test for H2 bug: N/step with start value
 	// "5/5" means: start at 5, then every 5 mins → 5,10,15,20,25,30,35,40,45,50,55
 	// Before H2 fix, value < start was incorrectly treated as a match because
@@ -985,8 +1007,8 @@ func TestStopAllStopsRunningPipelines(t *testing.T) {
 	}
 	writeJSONFile(t, filepath.Join(taskMetaDir, taskName+".json"), meta)
 
-	taskMgr := task.NewManager(tasksDir, taskMetaDir, pipelinesDir)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	taskMgr := task.NewManager(tasksDir, taskMetaDir, pipelinesDir, logger)
 	mgr := NewManager(runsDir, dataDir, taskMgr, logger, agent.MustGet("claude-code"))
 	mgr.SetPipelineStatusSetter(&stubStatusSetter{})
 
@@ -1034,6 +1056,7 @@ func TestStopAllStopsRunningPipelines(t *testing.T) {
 }
 
 func TestProcessStartTimeSelf(t *testing.T) {
+	t.Parallel()
 	v := processStartTime(os.Getpid())
 	if v == 0 {
 		t.Fatal("processStartTime should return non-zero for current process")
@@ -1041,6 +1064,7 @@ func TestProcessStartTimeSelf(t *testing.T) {
 }
 
 func TestProcessStartTimeInit(t *testing.T) {
+	t.Parallel()
 	v := processStartTime(1)
 	if v == 0 {
 		t.Fatal("processStartTime should return non-zero for PID 1 (init)")
@@ -1048,6 +1072,7 @@ func TestProcessStartTimeInit(t *testing.T) {
 }
 
 func TestProcessStartTimeInvalidPID(t *testing.T) {
+	t.Parallel()
 	v := processStartTime(99999999)
 	if v != 0 {
 		t.Fatalf("processStartTime should return 0 for invalid PID, got %d", v)
@@ -1055,6 +1080,7 @@ func TestProcessStartTimeInvalidPID(t *testing.T) {
 }
 
 func TestProcessStartTimeNegativePID(t *testing.T) {
+	t.Parallel()
 	v := processStartTime(-1)
 	if v != 0 {
 		t.Fatalf("processStartTime should return 0 for negative PID, got %d", v)
@@ -1062,6 +1088,7 @@ func TestProcessStartTimeNegativePID(t *testing.T) {
 }
 
 func TestComputeStages(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		tasks []RunTask

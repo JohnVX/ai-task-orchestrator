@@ -3,6 +3,7 @@ package pipeline
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -52,6 +53,9 @@ type TaskChecker interface {
 type RunCleaner interface {
 	DeleteRuns(pipelineID string) error
 	IsRunning(pipelineID string) bool
+	// DeletePipelineRuns atomically (under runner.mu) checks running,
+	// deletes all runs for the pipeline, and calls removeFile callback.
+	DeletePipelineRuns(id string, removeFile func() error) error
 }
 
 // Manager handles pipeline CRUD and task ordering.
@@ -59,13 +63,14 @@ type Manager struct {
 	pipelinesDir string
 	taskMgr      TaskChecker
 	runCleaner   RunCleaner
+	logger       *slog.Logger
 	mu           sync.Mutex
 }
 
 // NewManager creates a Manager. It ensures the pipelines directory exists.
-func NewManager(pipelinesDir string, taskMgr TaskChecker, runCleaner RunCleaner) *Manager {
+func NewManager(pipelinesDir string, taskMgr TaskChecker, runCleaner RunCleaner, logger *slog.Logger) *Manager {
 	os.MkdirAll(pipelinesDir, 0755)
-	return &Manager{pipelinesDir: pipelinesDir, taskMgr: taskMgr, runCleaner: runCleaner}
+	return &Manager{pipelinesDir: pipelinesDir, taskMgr: taskMgr, runCleaner: runCleaner, logger: logger}
 }
 
 // --- helpers ---
@@ -88,14 +93,23 @@ func (m *Manager) readPipeline(id string) (*Pipeline, error) {
 }
 
 func (m *Manager) writePipeline(p *Pipeline) error {
-	f, err := os.Create(m.pipelinePath(p.ID))
+	tmpPath := m.pipelinePath(p.ID) + ".tmp"
+	f, err := os.Create(tmpPath)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
 	enc := json.NewEncoder(f)
 	enc.SetIndent("", "  ")
-	return enc.Encode(p)
+	if err := enc.Encode(p); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	return os.Rename(tmpPath, m.pipelinePath(p.ID))
 }
 
 // nextID generates the next pipeline ID by scanning existing files.
@@ -121,6 +135,17 @@ func (m *Manager) nextID() string {
 
 // Create writes a new pipeline definition.
 func (m *Manager) Create(name string, schedule string, webhookURL string, loopCount *int) (*Pipeline, error) {
+	if name == "" {
+		return nil, fmt.Errorf("pipeline name required")
+	}
+	if len(name) > 256 {
+		return nil, fmt.Errorf("pipeline name too long (max 256)")
+	}
+	for _, r := range name {
+		if r < 0x20 && r != '\t' {
+			return nil, fmt.Errorf("pipeline name contains invalid character")
+		}
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	all, err := m.All()
@@ -163,19 +188,20 @@ func (m *Manager) Delete(id string) error {
 	if p.Status == StatusRunning {
 		return fmt.Errorf("pipeline %s is running, stop it first", id)
 	}
-	if m.runCleaner != nil && m.runCleaner.IsRunning(id) {
-		return fmt.Errorf("pipeline %s is running, stop it first", id)
-	}
 	if m.runCleaner != nil {
-		if err := m.runCleaner.DeleteRuns(id); err != nil {
-			return fmt.Errorf("delete runs for pipeline %s: %w", id, err)
+		// Under runner.mu: atomically check running + delete runs + remove pipeline file.
+		// Start() cannot interleave because it also acquires runner.mu.
+		if err := m.runCleaner.DeletePipelineRuns(id, func() error {
+			return os.Remove(m.pipelinePath(id))
+		}); err != nil {
+			return err
 		}
-		// Re-check: Start() may have registered between the first check and now.
-		if m.runCleaner.IsRunning(id) {
-			return fmt.Errorf("pipeline %s is running, stop it first", id)
+	} else {
+		if err := os.Remove(m.pipelinePath(id)); err != nil {
+			return err
 		}
 	}
-	return os.Remove(m.pipelinePath(id))
+	return nil
 }
 
 // Get returns a pipeline by ID.
@@ -200,12 +226,42 @@ func (m *Manager) All() ([]Pipeline, error) {
 		id := strings.TrimSuffix(e.Name(), ".json")
 		p, err := m.readPipeline(id)
 		if err != nil {
+			if m.logger != nil {
+				m.logger.Warn("pipeline: skipping unreadable pipeline file", "id", id, "error", err)
+			}
 			continue
 		}
 		pipes = append(pipes, *p)
 	}
 	sort.Slice(pipes, func(i, j int) bool { return pipes[i].CreatedAt.Before(pipes[j].CreatedAt) })
 	return pipes, nil
+}
+
+// PipelineExport is the exported representation of a pipeline,
+// containing only configuration fields (no runtime state).
+type PipelineExport struct {
+	Name       string    `json:"name"`
+	Tasks      []TaskRef `json:"tasks"`
+	Schedule   string    `json:"schedule,omitempty"`
+	WebhookURL string    `json:"webhook_url,omitempty"`
+	LoopCount  *int      `json:"loop_count,omitempty"`
+}
+
+// Export returns the pipeline configuration as JSON bytes,
+// stripping runtime state (id, created_at, status).
+func (m *Manager) Export(id string) ([]byte, error) {
+	p, err := m.readPipeline(id)
+	if err != nil {
+		return nil, err
+	}
+	exp := PipelineExport{
+		Name:       p.Name,
+		Tasks:      p.Tasks,
+		Schedule:   p.Schedule,
+		WebhookURL: p.WebhookURL,
+		LoopCount:  p.LoopCount,
+	}
+	return json.MarshalIndent(exp, "", "  ")
 }
 
 // AddTask appends a task to the pipeline's task list. The task must exist.

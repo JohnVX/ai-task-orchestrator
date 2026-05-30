@@ -15,6 +15,7 @@ import (
 )
 
 func TestCleanupOldRunsDisabled(t *testing.T) {
+	t.Parallel()
 	m := setupCleanupManager(t)
 	createRuns(t, m.runsDir, "pipeline-1", 5)
 
@@ -27,6 +28,7 @@ func TestCleanupOldRunsDisabled(t *testing.T) {
 }
 
 func TestCleanupOldRunsWithinLimit(t *testing.T) {
+	t.Parallel()
 	m := setupCleanupManager(t)
 	createRuns(t, m.runsDir, "pipeline-1", 3)
 
@@ -38,6 +40,7 @@ func TestCleanupOldRunsWithinLimit(t *testing.T) {
 }
 
 func TestCleanupOldRunsExactlyAtLimit(t *testing.T) {
+	t.Parallel()
 	m := setupCleanupManager(t)
 	createRuns(t, m.runsDir, "pipeline-1", 5)
 
@@ -49,6 +52,7 @@ func TestCleanupOldRunsExactlyAtLimit(t *testing.T) {
 }
 
 func TestCleanupOldRunsOverLimit(t *testing.T) {
+	t.Parallel()
 	m := setupCleanupManager(t)
 	createRuns(t, m.runsDir, "pipeline-1", 10)
 
@@ -71,6 +75,7 @@ func TestCleanupOldRunsOverLimit(t *testing.T) {
 }
 
 func TestCleanupOldRunsSkipsRunningPipeline(t *testing.T) {
+	t.Parallel()
 	m := setupCleanupManager(t)
 	createRuns(t, m.runsDir, "pipeline-1", 10)
 
@@ -96,6 +101,7 @@ func TestCleanupOldRunsSkipsRunningPipeline(t *testing.T) {
 }
 
 func TestCleanupOldRunsMultiplePipelines(t *testing.T) {
+	t.Parallel()
 	m := setupCleanupManager(t)
 	createRuns(t, m.runsDir, "pipeline-1", 8)
 	createRuns(t, m.runsDir, "pipeline-2", 3)
@@ -119,6 +125,7 @@ func TestCleanupOldRunsMultiplePipelines(t *testing.T) {
 }
 
 func TestCleanupOldRunsMixedWithRunning(t *testing.T) {
+	t.Parallel()
 	m := setupCleanupManager(t)
 	createRuns(t, m.runsDir, "pipeline-1", 10)
 	createRuns(t, m.runsDir, "pipeline-2", 6)
@@ -146,6 +153,7 @@ func TestCleanupOldRunsMixedWithRunning(t *testing.T) {
 }
 
 func TestCleanupOldRunsNoRuns(t *testing.T) {
+	t.Parallel()
 	m := setupCleanupManager(t)
 	// No runs created
 
@@ -156,6 +164,7 @@ func TestCleanupOldRunsNoRuns(t *testing.T) {
 }
 
 func TestCleanupOldRunsNonRunDirsIgnored(t *testing.T) {
+	t.Parallel()
 	m := setupCleanupManager(t)
 	// Create a non-run directory
 	os.MkdirAll(filepath.Join(m.runsDir, "not-a-run"), 0755)
@@ -184,8 +193,8 @@ func setupCleanupManager(t *testing.T) *Manager {
 		}
 	}
 
-	taskMgr := task.NewManager(tasksDir, taskMetaDir, pipelinesDir)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	taskMgr := task.NewManager(tasksDir, taskMetaDir, pipelinesDir, logger)
 	return NewManager(runsDir, dataDir, taskMgr, logger, agent.MustGet("claude-code"))
 }
 

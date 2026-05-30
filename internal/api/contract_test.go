@@ -62,6 +62,7 @@ func requireNumField(t *testing.T, m map[string]interface{}, field, endpoint str
 // JS: renderTaskList() → t.name, t.type; window.taskMetas[t.name] = t
 
 func TestContractTaskList(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "ct-echo", "#!/bin/sh\necho ok\n")
 
@@ -84,6 +85,7 @@ func TestContractTaskList(t *testing.T) {
 //   data.readme
 
 func TestContractTaskDetail(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "ct-detail", "#!/bin/sh\necho ok\n")
 	createTestLLMTask(t, h, "ct-llm", "echo hello")
@@ -124,6 +126,7 @@ func TestContractTaskDetail(t *testing.T) {
 // JS: renderPipelineList() → p.id, p.name, p.status
 
 func TestContractPipelineList(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestPipeline(t, h, "ct-pipe-list")
 
@@ -148,6 +151,7 @@ func TestContractPipelineList(t *testing.T) {
 //   JS handles undefined gracefully: if (pipeline.schedule) ...
 
 func TestContractPipelineDetail(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "ct-pd-a", "#!/bin/sh\necho a\n")
 	createTestTask(t, h, "ct-pd-b", "#!/bin/sh\necho b\n")
@@ -209,6 +213,7 @@ func TestContractPipelineDetail(t *testing.T) {
 //   .task_index, .current_run_id, .iteration, .loop_total
 
 func TestContractState(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 
 	resp := doRequest(t, h, "GET", "/api/state", nil)
@@ -239,11 +244,12 @@ func TestContractState(t *testing.T) {
 // JS: renderRunHistory() → r.run_id, r.pipeline_id, r.status, r.size, r.task_count
 
 func TestContractRunList(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "ct-rl", "#!/bin/sh\necho ok\n")
 	p := createTestPipeline(t, h, "ct-run-list")
 	mustAddTask(t, h, p.ID, "ct-rl")
-	startAndWait(t, h, p.ID, 10_000)
+	startAndWait(t, h, p.ID, 10*time.Second)
 
 	resp := doRequest(t, h, "GET", "/api/runs?pipeline_id="+p.ID, nil)
 	mustStatus(t, resp, 200)
@@ -266,11 +272,12 @@ func TestContractRunList(t *testing.T) {
 //   inst.exit_code, inst.index
 
 func TestContractRunDetail(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "ct-rd", "#!/bin/sh\necho ok\n")
 	p := createTestPipeline(t, h, "ct-run-detail")
 	mustAddTask(t, h, p.ID, "ct-rd")
-	runID, instances := startAndWait(t, h, p.ID, 10_000)
+	runID, instances := startAndWait(t, h, p.ID, 10*time.Second)
 
 	if runID == "" {
 		t.Fatal("expected non-empty run_id")
@@ -301,11 +308,12 @@ func TestContractRunDetail(t *testing.T) {
 // JS: same as filtered run list
 
 func TestContractAllRuns(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "ct-ar", "#!/bin/sh\necho ok\n")
 	p := createTestPipeline(t, h, "ct-all-runs")
 	mustAddTask(t, h, p.ID, "ct-ar")
-	startAndWait(t, h, p.ID, 10_000)
+	startAndWait(t, h, p.ID, 10*time.Second)
 
 	resp := doRequest(t, h, "GET", "/api/runs", nil)
 	mustStatus(t, resp, 200)
@@ -324,6 +332,7 @@ func TestContractAllRuns(t *testing.T) {
 // JS: startPipeline() → data.run_id
 
 func TestContractStartPipeline(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "ct-start", "#!/bin/sh\necho ok\n")
 	p := createTestPipeline(t, h, "ct-start-pipe")
@@ -340,6 +349,7 @@ func TestContractStartPipeline(t *testing.T) {
 // JS: retryRun() → data.status (expects {"status":"ok"})
 
 func TestContractContinueRun(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "ct-cont1", "#!/bin/sh\necho ok\n")
 	createTestTask(t, h, "ct-cont2", "#!/bin/sh\nexit 1\n")
@@ -347,7 +357,7 @@ func TestContractContinueRun(t *testing.T) {
 	mustAddTask(t, h, p.ID, "ct-cont1")
 	mustAddTask(t, h, p.ID, "ct-cont2")
 
-	runID, _ := startAndWait(t, h, p.ID, 10_000)
+	runID, _ := startAndWait(t, h, p.ID, 10*time.Second)
 
 	resp := doRequest(t, h, "POST", "/api/runs/"+runID+"/continue", map[string]interface{}{
 		"pipeline_id": p.ID,
@@ -364,6 +374,7 @@ func TestContractContinueRun(t *testing.T) {
 // current_task must contain comma-separated task names during parallel execution.
 
 func TestContractRunningStateDuringParallelStage(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "cs-slow", "#!/bin/sh\nsleep 1\necho done\n")
 	createTestTask(t, h, "cs-fast", "#!/bin/sh\necho done\n")
@@ -405,6 +416,7 @@ func TestContractRunningStateDuringParallelStage(t *testing.T) {
 // JS: renderPipelineTasks() → t.type === 'llm-prompt' ? 'LLM' : 'EXE'
 
 func TestContractEnrichedTasksHaveType(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "ct-type-exe", "#!/bin/sh\necho ok\n")
 	createTestLLMTask(t, h, "ct-type-llm", "echo hello")
@@ -438,6 +450,7 @@ func TestContractEnrichedTasksHaveType(t *testing.T) {
 // JS: createPipeline() → data
 
 func TestContractCreatePipeline(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 
 	resp := doRequest(t, h, "POST", "/api/pipelines", map[string]interface{}{
@@ -455,6 +468,7 @@ func TestContractCreatePipeline(t *testing.T) {
 // JS: deletePipeline() → response
 
 func TestContractDeletePipeline(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	p := createTestPipeline(t, h, "ct-delete-pipe")
 
@@ -468,16 +482,67 @@ func TestContractDeletePipeline(t *testing.T) {
 // JS: deleteRun() → response
 
 func TestContractDeleteRun(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "ct-del-run", "#!/bin/sh\necho ok\n")
 	p := createTestPipeline(t, h, "ct-del-run-pipe")
 	mustAddTask(t, h, p.ID, "ct-del-run")
-	runID, _ := startAndWait(t, h, p.ID, 10_000)
+	runID, _ := startAndWait(t, h, p.ID, 10*time.Second)
 
 	resp := doRequest(t, h, "DELETE", "/api/runs/"+runID, nil)
 	mustStatus(t, resp, 200)
 	data := decodeMap(t, resp)
 	requireStringField(t, data, "status", "DELETE /api/runs/{id}")
+}
+
+// --- GET /api/pipelines/{id}/export ---
+// JS: export button → download pipeline config JSON (name, tasks[], schedule,
+//   webhook_url, loop_count). No id/status/created_at.
+
+func TestContractPipelineExport(t *testing.T) {
+	t.Parallel()
+	h := newTestHandler(t)
+	createTestTask(t, h, "ct-pexp", "#!/bin/sh\necho ok\n")
+	p := createTestPipeline(t, h, "ct-pexp-pipe")
+	mustAddTask(t, h, p.ID, "ct-pexp")
+
+	resp := doRequest(t, h, "GET", "/api/pipelines/"+p.ID+"/export", nil)
+	mustStatus(t, resp, 200)
+	data := decodeMap(t, resp)
+
+	requireStringField(t, data, "name", "GET /api/pipelines/{id}/export")
+	if _, ok := data["tasks"]; !ok {
+		t.Error("[GET /api/pipelines/{id}/export] required field \"tasks\" missing")
+	}
+	// Runtime fields must NOT be present
+	if _, ok := data["id"]; ok {
+		t.Error("[GET /api/pipelines/{id}/export] runtime field \"id\" should be stripped")
+	}
+	if _, ok := data["status"]; ok {
+		t.Error("[GET /api/pipelines/{id}/export] runtime field \"status\" should be stripped")
+	}
+	if _, ok := data["created_at"]; ok {
+		t.Error("[GET /api/pipelines/{id}/export] runtime field \"created_at\" should be stripped")
+	}
+}
+
+// --- POST /api/pipelines/import ---
+// JS: import button → response with id, name, status, created_at
+
+func TestContractPipelineImport(t *testing.T) {
+	t.Parallel()
+	h := newTestHandler(t)
+	createTestTask(t, h, "ct-pimp", "#!/bin/sh\necho ok\n")
+
+	jsonBody := `{"name":"ct-pimp-pipe","tasks":[{"name":"ct-pimp"}]}`
+	resp := doRequestRaw(t, h, "POST", "/api/pipelines/import", "application/json", jsonBody)
+	mustStatus(t, resp, 201)
+	data := decodeMap(t, resp)
+
+	requireStringField(t, data, "id", "POST /api/pipelines/import")
+	requireStringField(t, data, "name", "POST /api/pipelines/import")
+	requireStringField(t, data, "status", "POST /api/pipelines/import")
+	requireStringField(t, data, "created_at", "POST /api/pipelines/import")
 }
 
 // --- helper ---

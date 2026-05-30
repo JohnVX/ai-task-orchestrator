@@ -4,6 +4,8 @@ import (
 	"archive/tar"
 	"bytes"
 	"encoding/json"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +15,7 @@ import (
 // ===== validTaskName =====
 
 func TestValidTaskName(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		valid bool
@@ -41,6 +44,7 @@ func TestValidTaskName(t *testing.T) {
 // ===== parseReadme =====
 
 func TestParseReadmeFound(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "README.md"), []byte("# My Task\nContent"), 0644)
 	content, found := parseReadme(dir)
@@ -53,6 +57,7 @@ func TestParseReadmeFound(t *testing.T) {
 }
 
 func TestParseReadmeLowercase(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "readme.md"), []byte("# lower"), 0644)
 	content, found := parseReadme(dir)
@@ -65,6 +70,7 @@ func TestParseReadmeLowercase(t *testing.T) {
 }
 
 func TestParseReadmeNoExtension(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "readme"), []byte("no ext"), 0644)
 	content, found := parseReadme(dir)
@@ -77,6 +83,7 @@ func TestParseReadmeNoExtension(t *testing.T) {
 }
 
 func TestParseReadmeNotFound(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	_, found := parseReadme(dir)
 	if found {
@@ -85,6 +92,7 @@ func TestParseReadmeNotFound(t *testing.T) {
 }
 
 func TestParseReadmeSkipsDirs(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	os.MkdirAll(filepath.Join(dir, "README.md"), 0755) // directory named README.md
 	_, found := parseReadme(dir)
@@ -94,6 +102,7 @@ func TestParseReadmeSkipsDirs(t *testing.T) {
 }
 
 func TestParseReadmePriority(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "readme.txt"), []byte("txt content"), 0644)
 	os.WriteFile(filepath.Join(dir, "README.md"), []byte("md content"), 0644)
@@ -109,6 +118,7 @@ func TestParseReadmePriority(t *testing.T) {
 // ===== parseTaskDescriptor =====
 
 func TestParseTaskDescriptorTypeLLMPrompt(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "for-task-orchestrator.txt"),
 		[]byte("type: llm-prompt\nstart: ./run.sh\nstop: ./stop.sh\n"), 0644)
@@ -125,6 +135,7 @@ func TestParseTaskDescriptorTypeLLMPrompt(t *testing.T) {
 }
 
 func TestParseTaskDescriptorTypeSelfContained(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "for-task-orchestrator.txt"),
 		[]byte("type: self-contained\nstart: ./custom.sh\n"), 0644)
@@ -141,6 +152,7 @@ func TestParseTaskDescriptorTypeSelfContained(t *testing.T) {
 }
 
 func TestParseTaskDescriptorNoType(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "for-task-orchestrator.txt"),
 		[]byte("start: ./run.sh\n"), 0644)
@@ -157,6 +169,7 @@ func TestParseTaskDescriptorNoType(t *testing.T) {
 }
 
 func TestParseTaskDescriptorMissingFile(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	taskType, runCmd, stopCmd := parseTaskDescriptor(dir)
 	if taskType != "" || runCmd != "" || stopCmd != "" {
@@ -165,6 +178,7 @@ func TestParseTaskDescriptorMissingFile(t *testing.T) {
 }
 
 func TestParseTaskDescriptorComments(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "for-task-orchestrator.txt"),
 		[]byte("# this is a comment\ntype: llm-prompt\nstart: ./run.sh  # inline comment\n"), 0644)
@@ -178,6 +192,7 @@ func TestParseTaskDescriptorComments(t *testing.T) {
 }
 
 func TestParseTaskDescriptorFirstMatchWins(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "for-task-orchestrator.txt"),
 		[]byte("start: ./first.sh\nstart: ./second.sh\n"), 0644)
@@ -188,6 +203,7 @@ func TestParseTaskDescriptorFirstMatchWins(t *testing.T) {
 }
 
 func TestParseTaskDescriptorBlankLines(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "for-task-orchestrator.txt"),
 		[]byte("\n\nstart: ./run.sh\n\n"), 0644)
@@ -198,6 +214,7 @@ func TestParseTaskDescriptorBlankLines(t *testing.T) {
 }
 
 func TestParseAgentFromDescriptorFound(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "for-task-orchestrator.txt"),
 		[]byte("type: llm-prompt\nagent: opencode\n"), 0644)
@@ -211,6 +228,7 @@ func TestParseAgentFromDescriptorFound(t *testing.T) {
 }
 
 func TestParseAgentFromDescriptorMissing(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "for-task-orchestrator.txt"),
 		[]byte("type: llm-prompt\n"), 0644)
@@ -224,6 +242,7 @@ func TestParseAgentFromDescriptorMissing(t *testing.T) {
 }
 
 func TestParseAgentFromDescriptorNoFile(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	agentName, found := parseAgentFromDescriptor(dir)
 	if found {
@@ -258,6 +277,7 @@ func makeTestTar(t *testing.T, files map[string]string) string {
 }
 
 func TestExtractTarBasic(t *testing.T) {
+	t.Parallel()
 	dst := t.TempDir()
 	tarPath := makeTestTar(t, map[string]string{
 		"file1.txt": "hello",
@@ -277,6 +297,7 @@ func TestExtractTarBasic(t *testing.T) {
 }
 
 func TestExtractTarPathTraversalRejected(t *testing.T) {
+	t.Parallel()
 	dst := t.TempDir()
 	tarPath := makeTestTar(t, map[string]string{
 		"../escape.txt": "bad",
@@ -291,6 +312,7 @@ func TestExtractTarPathTraversalRejected(t *testing.T) {
 }
 
 func TestExtractTarAbsolutePathRejected(t *testing.T) {
+	t.Parallel()
 	dst := t.TempDir()
 	tarPath := makeTestTar(t, map[string]string{
 		"/etc/passwd": "bad",
@@ -301,6 +323,7 @@ func TestExtractTarAbsolutePathRejected(t *testing.T) {
 }
 
 func TestExtractTarInvalidTar(t *testing.T) {
+	t.Parallel()
 	dst := t.TempDir()
 	badPath := filepath.Join(t.TempDir(), "bad.tar")
 	os.WriteFile(badPath, []byte("not a tar"), 0644)
@@ -310,6 +333,7 @@ func TestExtractTarInvalidTar(t *testing.T) {
 }
 
 func TestExtractTarEmpty(t *testing.T) {
+	t.Parallel()
 	dst := t.TempDir()
 	tarPath := makeTestTar(t, map[string]string{})
 	if err := extractTar(tarPath, dst); err != nil {
@@ -320,6 +344,7 @@ func TestExtractTarEmpty(t *testing.T) {
 // ===== copyDir =====
 
 func TestCopyDirBasic(t *testing.T) {
+	t.Parallel()
 	src := t.TempDir()
 	os.WriteFile(filepath.Join(src, "a.txt"), []byte("aaa"), 0644)
 	os.MkdirAll(filepath.Join(src, "sub"), 0755)
@@ -340,6 +365,7 @@ func TestCopyDirBasic(t *testing.T) {
 }
 
 func TestCopyDirNonExistentSrc(t *testing.T) {
+	t.Parallel()
 	dst := t.TempDir()
 	if err := copyDir("/nonexistent/path", dst); err == nil {
 		t.Fatal("expected error for non-existent src")
@@ -355,6 +381,7 @@ func newTestManager(t *testing.T) *Manager {
 		filepath.Join(dir, "tasks"),
 		filepath.Join(dir, "task_meta"),
 		filepath.Join(dir, "pipelines"),
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
 	)
 }
 
@@ -368,6 +395,7 @@ func writeMetaFile(t *testing.T, mgr *Manager, meta *Meta) {
 }
 
 func TestExists(t *testing.T) {
+	t.Parallel()
 	mgr := newTestManager(t)
 	if mgr.Exists("no-such") {
 		t.Fatal("expected false for non-existent task")
@@ -379,6 +407,7 @@ func TestExists(t *testing.T) {
 }
 
 func TestGet(t *testing.T) {
+	t.Parallel()
 	mgr := newTestManager(t)
 	writeMetaFile(t, mgr, &Meta{Name: "get-task", RunCommand: "./run.sh"})
 
@@ -397,6 +426,7 @@ func TestGet(t *testing.T) {
 }
 
 func TestAll(t *testing.T) {
+	t.Parallel()
 	mgr := newTestManager(t)
 	all, err := mgr.All()
 	if err != nil {
@@ -419,6 +449,7 @@ func TestAll(t *testing.T) {
 }
 
 func TestAllWithCorruptMeta(t *testing.T) {
+	t.Parallel()
 	mgr := newTestManager(t)
 	writeMetaFile(t, mgr, &Meta{Name: "good"})
 	os.WriteFile(mgr.metaPath("bad"), []byte("{corrupt"), 0644)
@@ -433,6 +464,7 @@ func TestAllWithCorruptMeta(t *testing.T) {
 }
 
 func TestSetConfig(t *testing.T) {
+	t.Parallel()
 	mgr := newTestManager(t)
 	writeMetaFile(t, mgr, &Meta{Name: "cfg", RunCommand: "./old.sh"})
 
@@ -459,6 +491,7 @@ func TestSetConfig(t *testing.T) {
 }
 
 func TestSetConfigNonExistent(t *testing.T) {
+	t.Parallel()
 	mgr := newTestManager(t)
 	err := mgr.SetConfig("no-such", "x", "", false, 0, "", false, 0, "")
 	if err == nil {
@@ -467,6 +500,7 @@ func TestSetConfigNonExistent(t *testing.T) {
 }
 
 func TestSetConfigInvalidOnTimeout(t *testing.T) {
+	t.Parallel()
 	mgr := newTestManager(t)
 	writeMetaFile(t, mgr, &Meta{Name: "bad"})
 	err := mgr.SetConfig("bad", "x", "", false, 0, "garbage", false, 0, "")
@@ -476,6 +510,7 @@ func TestSetConfigInvalidOnTimeout(t *testing.T) {
 }
 
 func TestSetConfigLLMAgent(t *testing.T) {
+	t.Parallel()
 	mgr := newTestManager(t)
 	writeMetaFile(t, mgr, &Meta{Name: "llm-task", Type: "llm-prompt"})
 	if err := mgr.SetConfig("llm-task", "", "", false, 0, "", false, 0, "opencode"); err != nil {
@@ -488,6 +523,7 @@ func TestSetConfigLLMAgent(t *testing.T) {
 }
 
 func TestDelete(t *testing.T) {
+	t.Parallel()
 	mgr := newTestManager(t)
 	os.MkdirAll(filepath.Join(mgr.tasksDir, "del-task"), 0755)
 	writeMetaFile(t, mgr, &Meta{Name: "del-task", PackagePath: "tasks/del-task"})
@@ -504,6 +540,7 @@ func TestDelete(t *testing.T) {
 }
 
 func TestDeleteNonExistent(t *testing.T) {
+	t.Parallel()
 	mgr := newTestManager(t)
 	err := mgr.Delete("no-such")
 	if err == nil {
@@ -512,6 +549,7 @@ func TestDeleteNonExistent(t *testing.T) {
 }
 
 func TestDeleteTaskReferencedByPipeline(t *testing.T) {
+	t.Parallel()
 	mgr := newTestManager(t)
 	os.MkdirAll(filepath.Join(mgr.tasksDir, "used"), 0755)
 	writeMetaFile(t, mgr, &Meta{Name: "used", PackagePath: "tasks/used"})
@@ -536,6 +574,7 @@ func TestDeleteTaskReferencedByPipeline(t *testing.T) {
 }
 
 func TestPipelines(t *testing.T) {
+	t.Parallel()
 	mgr := newTestManager(t)
 	os.MkdirAll(mgr.pipelinesDir, 0755)
 
@@ -570,6 +609,7 @@ func TestPipelines(t *testing.T) {
 }
 
 func TestPipelinesNonExistentDir(t *testing.T) {
+	t.Parallel()
 	mgr := &Manager{pipelinesDir: "/nonexistent"}
 	ids, err := mgr.Pipelines("x")
 	if err != nil {
@@ -581,6 +621,7 @@ func TestPipelinesNonExistentDir(t *testing.T) {
 }
 
 func TestParseReadmeMethod(t *testing.T) {
+	t.Parallel()
 	mgr := newTestManager(t)
 	taskDir := filepath.Join(mgr.tasksDir, "readme-task")
 	os.MkdirAll(taskDir, 0755)
@@ -598,6 +639,7 @@ func TestParseReadmeMethod(t *testing.T) {
 }
 
 func TestExport(t *testing.T) {
+	t.Parallel()
 	mgr := newTestManager(t)
 	taskDir := filepath.Join(mgr.tasksDir, "export-me")
 	os.MkdirAll(taskDir, 0755)
@@ -637,6 +679,7 @@ func TestExport(t *testing.T) {
 }
 
 func TestExportNonExistent(t *testing.T) {
+	t.Parallel()
 	mgr := newTestManager(t)
 	_, err := mgr.Export("no-such")
 	if err == nil {
@@ -645,6 +688,7 @@ func TestExportNonExistent(t *testing.T) {
 }
 
 func TestExportMissingDir(t *testing.T) {
+	t.Parallel()
 	mgr := newTestManager(t)
 	writeMetaFile(t, mgr, &Meta{Name: "missing-dir", PackagePath: "tasks/missing-dir"})
 	_, err := mgr.Export("missing-dir")
@@ -654,6 +698,7 @@ func TestExportMissingDir(t *testing.T) {
 }
 
 func TestUploadInvalidTarName(t *testing.T) {
+	t.Parallel()
 	mgr := newTestManager(t)
 	_, err := mgr.Upload("/path/to/noext")
 	if err == nil || !strings.Contains(err.Error(), "invalid tar filename") {
@@ -662,6 +707,7 @@ func TestUploadInvalidTarName(t *testing.T) {
 }
 
 func TestUploadInvalidTaskName(t *testing.T) {
+	t.Parallel()
 	mgr := newTestManager(t)
 	path := filepath.Join(t.TempDir(), "@invalid!.tar")
 	os.WriteFile(path, []byte("content"), 0644)
@@ -672,6 +718,7 @@ func TestUploadInvalidTaskName(t *testing.T) {
 }
 
 func TestUploadDuplicateTask(t *testing.T) {
+	t.Parallel()
 	mgr := newTestManager(t)
 	writeMetaFile(t, mgr, &Meta{Name: "dup"})
 

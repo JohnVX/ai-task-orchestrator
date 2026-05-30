@@ -46,6 +46,17 @@ const api = {
   deleteRun(runId)   { return this.request('DELETE', '/api/runs/' + encodeURIComponent(runId)); },
   getState()         { return this.request('GET', '/api/state'); },
   retryRun(id, runId) { return this.request('POST', '/api/runs/' + encodeURIComponent(runId) + '/continue', { pipeline_id: id }); },
+  exportPipeline(id) {
+    const a = document.createElement('a');
+    a.href = '/api/pipelines/' + id + '/export';
+    a.download = 'pipeline-' + id + '.json';
+    a.click();
+  },
+  importPipeline(file) {
+    const fd = new FormData();
+    fd.append('file', file);
+    return this.request('POST', '/api/pipelines/import', fd);
+  },
 };
 
 // --- state ---
@@ -750,6 +761,29 @@ function initRunButtons() {
       await api.stopPipeline(currentPipelineId);
       refreshAll();
     } catch (e) { alert('停止失败: ' + e.message); }
+  });
+
+  document.getElementById('pipeline-export-btn').addEventListener('click', () => {
+    if (!currentPipelineId) return;
+    api.exportPipeline(currentPipelineId);
+  });
+
+  document.getElementById('pipeline-import-btn').addEventListener('click', () => {
+    document.getElementById('pipeline-import-file').click();
+  });
+
+  document.getElementById('pipeline-import-file').addEventListener('change', async () => {
+    const input = document.getElementById('pipeline-import-file');
+    const file = input.files[0];
+    if (!file) return;
+    try {
+      const data = await api.importPipeline(file);
+      input.value = '';
+      currentPipelineId = data.id;
+      renderPipelineList();
+      refreshCanvas();
+      renderRunHistory();
+    } catch (e) { alert('导入失败: ' + e.message); }
   });
 
   document.getElementById('pipeline-delete-btn').addEventListener('click', async () => {

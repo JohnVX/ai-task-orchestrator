@@ -7,6 +7,7 @@ import (
 )
 
 func TestRegistryContainsBothAgents(t *testing.T) {
+	t.Parallel()
 	names := []string{"claude-code", "opencode"}
 	for _, name := range names {
 		a, err := Get(name)
@@ -20,6 +21,7 @@ func TestRegistryContainsBothAgents(t *testing.T) {
 }
 
 func TestGetUnknownAgent(t *testing.T) {
+	t.Parallel()
 	_, err := Get("unknown-agent")
 	if err == nil {
 		t.Error("expected error for unknown agent")
@@ -27,6 +29,7 @@ func TestGetUnknownAgent(t *testing.T) {
 }
 
 func TestMustGetPanicsOnUnknown(t *testing.T) {
+	t.Parallel()
 	defer func() {
 		if r := recover(); r == nil {
 			t.Error("expected panic for MustGet with unknown agent")
@@ -36,6 +39,7 @@ func TestMustGetPanicsOnUnknown(t *testing.T) {
 }
 
 func TestOpencodeAgentName(t *testing.T) {
+	t.Parallel()
 	a := &opencodeAgent{}
 	if a.Name() != "opencode" {
 		t.Errorf("expected name 'opencode', got %q", a.Name())
@@ -43,6 +47,7 @@ func TestOpencodeAgentName(t *testing.T) {
 }
 
 func TestOpencodeAgentBuildCommandReadsPrompt(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	promptFile := filepath.Join(dir, "prompt.md")
 	content := "List all files in the current directory.\n"
@@ -79,6 +84,7 @@ func TestOpencodeAgentBuildCommandReadsPrompt(t *testing.T) {
 }
 
 func TestOpencodeAgentBuildCommandMissingFile(t *testing.T) {
+	t.Parallel()
 	a := &opencodeAgent{}
 	_, err := a.BuildCommand("/nonexistent/path/prompt.md", "/tmp")
 	if err == nil {
@@ -87,6 +93,7 @@ func TestOpencodeAgentBuildCommandMissingFile(t *testing.T) {
 }
 
 func TestRegisterCustomAgent(t *testing.T) {
+	t.Parallel()
 	custom := &claudeCodeAgent{}
 	Register("custom-test", custom)
 	a, err := Get("custom-test")

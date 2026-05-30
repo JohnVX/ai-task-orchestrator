@@ -172,20 +172,30 @@ func (m *Manager) readState() (*OrchestratorState, error) {
 	defer f.Close()
 	var s OrchestratorState
 	if err := json.NewDecoder(f).Decode(&s); err != nil {
+		m.logger.Warn("corrupted state file, resetting to empty", "error", err)
 		return &OrchestratorState{}, nil
 	}
 	return &s, nil
 }
 
 func (m *Manager) writeState(s *OrchestratorState) error {
-	f, err := os.Create(m.statePath())
+	tmpPath := m.statePath() + ".tmp"
+	f, err := os.Create(tmpPath)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
 	enc := json.NewEncoder(f)
 	enc.SetIndent("", "  ")
-	return enc.Encode(s)
+	if err := enc.Encode(s); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	return os.Rename(tmpPath, m.statePath())
 }
 
 func (m *Manager) clearState() {
@@ -260,6 +270,7 @@ func writeTaskMeta(taskDir, taskName, runID, pipelineID, status string, startedA
 }
 
 // appendEvent writes a line to the per-run events log. Best-effort only.
+// Lines are truncated at 4096 bytes to prevent disk fill from long task names.
 func (m *Manager) appendEvent(runID, format string, args ...any) {
 	f, err := os.OpenFile(filepath.Join(m.runsDir, runID, "events.log"),
 		os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
@@ -267,7 +278,11 @@ func (m *Manager) appendEvent(runID, format string, args ...any) {
 		return
 	}
 	defer f.Close()
-	fmt.Fprintf(f, format+"\n", args...)
+	line := fmt.Sprintf(format+"\n", args...)
+	if len(line) > 4096 {
+		line = line[:4096]
+	}
+	f.WriteString(line)
 }
 
 // --- public methods ---
@@ -656,7 +671,12 @@ func (m *Manager) runOneTask(runID, runDir, pipelineID, writeBuf, readBuf string
 		if attempt == 0 {
 			firstStartAt = attemptStart
 		}
-		writeTaskMeta(taskDir, taskName, runID, pipelineID, TaskStatusRunning, &attemptStart, nil, -1, i)
+		if err := writeTaskMeta(taskDir, taskName, runID, pipelineID, TaskStatusRunning, &attemptStart, nil, -1, i); err != nil {
+				m.logger.Error("write task meta (running)", "run_id", runID, "task", logName, "error", err)
+				execErr = err
+				timedOut = false
+				break
+			}
 		if attempt == 0 {
 			m.logger.Info("task status changed", "run_id", runID, "task", logName, "status", TaskStatusRunning)
 			m.appendEvent(runID, "%s task=%s status=%s", time.Now().UTC().Format(time.RFC3339), logName, TaskStatusRunning)
@@ -706,12 +726,12 @@ func (m *Manager) runOneTask(runID, runDir, pipelineID, writeBuf, readBuf string
 		if cerr != nil {
 			m.logger.Warn("create stderr log", "error", cerr)
 		}
-		if meta.Type == task.TypeLLMPrompt {
+		if meta.Type == task.TypeLLMPrompt && stdoutF != nil {
 			promptFile := filepath.Join(m.dataDir, meta.PackagePath, "prompt.md")
 			if data, rerr := os.ReadFile(promptFile); rerr == nil {
-				stdoutF.WriteString("=== LLM Agent \u8f93\u5165 (prompt.md) ===\n")
+				stdoutF.WriteString("=== LLM Agent " + "\u8f93\u5165 (prompt.md)" + " ===\n")
 				stdoutF.Write(data)
-				stdoutF.WriteString("\n=== LLM Agent \u8f93\u51fa ===\n")
+				stdoutF.WriteString("\n=== LLM Agent " + "\u8f93\u51fa" + " ===\n")
 			}
 		}
 		cmd.Stdout = stdoutF
@@ -1085,6 +1105,36 @@ func (m *Manager) DeleteRuns(pipelineID string) error {
 	return nil
 }
 
+// DeletePipelineRuns atomically checks running status, deletes runs, and calls
+// removeFile callback — all under runner.mu. Prevents TOCTOU with concurrent Start().
+func (m *Manager) DeletePipelineRuns(id string, removeFile func() error) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.running[id]; ok {
+		return fmt.Errorf("pipeline %q is running", id)
+	}
+	entries, err := os.ReadDir(m.runsDir)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), "run-") {
+			continue
+		}
+		runDir := filepath.Join(m.runsDir, e.Name())
+		instances, _ := m.RunInfo(e.Name())
+		for _, inst := range instances {
+			if inst.PipelineID == id {
+				if err := os.RemoveAll(runDir); err != nil {
+					m.logger.Warn("delete runs: remove dir failed", "run_dir", runDir, "error", err)
+				}
+				break
+			}
+		}
+	}
+	return removeFile()
+}
+
 // RunDirSize returns the total size of a run directory in bytes.
 func (m *Manager) RunDirSize(runID string) (int64, error) {
 	runDir := filepath.Join(m.runsDir, runID)
@@ -1115,44 +1165,32 @@ type webhookPayload struct {
 }
 
 func (m *Manager) sendWebhook(url, pipelineID, runID, pipelineName string) {
-	runDir := filepath.Join(m.runsDir, runID)
-	entries, err := os.ReadDir(runDir)
-	if err != nil {
-		m.logger.Warn("webhook: cannot read run dir", "run_id", runID, "error", err)
-		return
-	}
-
-	var instances []TaskInstance
-	for _, e := range entries {
-		if !e.IsDir() || strings.HasPrefix(e.Name(), "task-data-") {
-			continue
-		}
-		metaPath := filepath.Join(runDir, e.Name(), "meta.json")
-		data, err := os.ReadFile(metaPath)
+	instances, err := m.RunInfo(runID)
+	if err != nil || len(instances) == 0 {
 		if err != nil {
-			continue
+			m.logger.Warn("webhook: cannot read run info", "run_id", runID, "error", err)
 		}
-		var inst TaskInstance
-		if json.Unmarshal(data, &inst) != nil {
-			continue
-		}
-		instances = append(instances, inst)
-	}
-
-	if len(instances) == 0 {
 		return
 	}
 
-	// Don't notify for manually stopped pipelines — check any task has "stopped" status.
+	// Don't notify for manually stopped pipelines.
 	for _, inst := range instances {
 		if inst.Status == TaskStatusStopped {
 			return
 		}
 	}
+	// Also skip if no task ever started (all pending — stopped before first execution).
+	allPending := true
+	for _, inst := range instances {
+		if inst.Status != TaskStatusPending {
+			allPending = false
+			break
+		}
+	}
+	if allPending {
+		return
+	}
 
-	sort.Slice(instances, func(i, j int) bool {
-		return instances[i].Index < instances[j].Index
-	})
 	status := ComputeRunStatus(instances)
 
 	startedAt := instances[0].StartedAt
@@ -1328,6 +1366,15 @@ func pidAlive(pid int) bool {
 
 // processStartTime reads the process start time (field 22) from /proc/[pid]/stat.
 // Returns the value in clock ticks since boot, or 0 on error.
+// ResolveLoopCount resolves a nil/pointer loop count to an int.
+// nil → 1, 0 → 0 (forever), N → N.
+func ResolveLoopCount(lc *int) int {
+	if lc == nil {
+		return 1
+	}
+	return *lc
+}
+
 func processStartTime(pid int) uint64 {
 	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
 	if err != nil {

@@ -58,7 +58,13 @@ func main() {
 	}
 	slogger.Info("log rotation completed", "compressed", compressed, "deleted", deleted)
 
-	taskMgr := task.NewManager(filepath.Join(absDataDir, "tasks"), filepath.Join(absDataDir, "task_meta"), filepath.Join(absDataDir, "pipelines"))
+	// Clean up leftover .tmp files from crash-safe writes
+	tmpCleaned := cleanTempFiles(absDataDir)
+	if tmpCleaned > 0 {
+		slogger.Info("cleaned stale temp files", "count", tmpCleaned)
+	}
+
+	taskMgr := task.NewManager(filepath.Join(absDataDir, "tasks"), filepath.Join(absDataDir, "task_meta"), filepath.Join(absDataDir, "pipelines"), slogger)
 	agt, err := agent.Get(*llmAgent)
 	if err != nil {
 		slogger.Warn("llm agent not available, llm-prompt tasks will fail at runtime", "agent", *llmAgent, "error", err)
@@ -68,7 +74,7 @@ func main() {
 	}
 
 	runMgr := runner.NewManager(filepath.Join(absDataDir, "runs"), absDataDir, taskMgr, slogger, agt)
-	pipelineMgr := pipeline.NewManager(filepath.Join(absDataDir, "pipelines"), taskMgr, runMgr)
+	pipelineMgr := pipeline.NewManager(filepath.Join(absDataDir, "pipelines"), taskMgr, runMgr, slogger)
 	runMgr.SetPipelineStatusSetter(pipelineMgr)
 
 	delRuns, freedBytes := runMgr.CleanupOldRuns(*maxRuns)
@@ -135,65 +141,71 @@ func main() {
 	slogger.Info("server stopped")
 }
 
+// pipeAdapter adapts *pipeline.Manager to runner.ScheduleChecker.
+type pipeAdapter struct {
+	mgr *pipeline.Manager
+}
+
+func (a *pipeAdapter) All() ([]runner.ScheduledPipeline, error) {
+	pipes, err := a.mgr.All()
+	if err != nil {
+		return nil, err
+	}
+	sps := make([]runner.ScheduledPipeline, len(pipes))
+	for i, p := range pipes {
+		tasks := make([]runner.RunTask, len(p.Tasks))
+		for j, ref := range p.Tasks {
+			tasks[j] = runner.RunTask{
+				Name:              ref.Name,
+				TimeoutSeconds:    ref.TimeoutSeconds,
+				OnTimeout:         ref.OnTimeout,
+				ContinueOnFailure: ref.ContinueOnFailure,
+				RetryCount:        ref.RetryCount,
+				Stage:             ref.Stage,
+			}
+		}
+		sps[i] = runner.ScheduledPipeline{
+			ID:         p.ID,
+			Name:       p.Name,
+			Schedule:   p.Schedule,
+			Status:     p.Status,
+			WebhookURL: p.WebhookURL,
+			LoopCount:  p.LoopCount,
+			Tasks:      tasks,
+		}
+	}
+	return sps, nil
+}
+
 func runScheduler(pipeMgr *pipeline.Manager, runMgr *runner.Manager, logger *slog.Logger) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
-	lastRun := make(map[string]time.Time)
+	sched := runner.NewScheduler(&pipeAdapter{mgr: pipeMgr}, runMgr, logger)
 
 	for range ticker.C {
-		pipes, err := pipeMgr.All()
-		if err != nil {
-			continue
-		}
-		now := time.Now()
-		activeIDs := make(map[string]bool, len(pipes))
-		for _, p := range pipes {
-			activeIDs[p.ID] = true
-			if p.Schedule == "" || p.Status == pipeline.StatusRunning {
-				continue
-			}
-			if len(p.Tasks) == 0 {
-				continue
-			}
-			if !runner.MatchCron(p.Schedule, now) {
-				continue
-			}
-			minuteKey := now.Truncate(time.Minute)
-			if last, ok := lastRun[p.ID]; ok && !last.Before(minuteKey) {
-				continue
-			}
-			lastRun[p.ID] = minuteKey
-
-			logger.Info("scheduled pipeline triggered", "pipeline_id", p.ID, "schedule", p.Schedule)
-			runTasks := make([]runner.RunTask, len(p.Tasks))
-			for i, ref := range p.Tasks {
-				runTasks[i] = runner.RunTask{
-					Name:              ref.Name,
-					TimeoutSeconds:    ref.TimeoutSeconds,
-					OnTimeout:         ref.OnTimeout,
-					ContinueOnFailure: ref.ContinueOnFailure,
-					RetryCount:        ref.RetryCount,
-					Stage:             ref.Stage,
-				}
-			}
-			if _, err := runMgr.Start(p.ID, runTasks, p.WebhookURL, p.Name, resolveLoopCount(p.LoopCount)); err != nil {
-				logger.Error("scheduled pipeline start failed", "pipeline_id", p.ID, "error", err)
-			}
-		}
-		for id := range lastRun {
-			if !activeIDs[id] {
-				delete(lastRun, id)
-			}
-		}
+		sched.Tick(time.Now())
 	}
 }
 
-func resolveLoopCount(lc *int) int {
-	if lc == nil {
-		return 1
+// cleanTempFiles removes leftover .tmp files in data subdirectories
+// that may remain after a crash during crash-safe writes.
+func cleanTempFiles(dataDir string) int {
+	var count int
+	for _, sub := range []string{"pipelines", "task_meta", "runs"} {
+		dir := filepath.Join(dataDir, sub)
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if strings.HasSuffix(e.Name(), ".tmp") {
+				os.Remove(filepath.Join(dir, e.Name()))
+				count++
+			}
+		}
 	}
-	return *lc
+	return count
 }
 
 type responseWriter struct {

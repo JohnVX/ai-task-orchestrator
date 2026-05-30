@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sync"
 )
 
 // Agent executes prompt-based tasks through a specific LLM agent binary.
@@ -20,18 +21,25 @@ type Agent interface {
 	BuildCommand(promptFile, workDir string) (*exec.Cmd, error)
 }
 
-var registry = map[string]Agent{
-	"claude-code": &claudeCodeAgent{},
-	"opencode":    &opencodeAgent{},
-}
+var (
+	registryMu sync.RWMutex
+	registry   = map[string]Agent{
+		"claude-code": &claudeCodeAgent{},
+		"opencode":    &opencodeAgent{},
+	}
+)
 
 // Register adds an agent to the registry.
 func Register(name string, a Agent) {
+	registryMu.Lock()
+	defer registryMu.Unlock()
 	registry[name] = a
 }
 
 // Get looks up an agent by name. Returns an error if not found.
 func Get(name string) (Agent, error) {
+	registryMu.RLock()
+	defer registryMu.RUnlock()
 	a, ok := registry[name]
 	if !ok {
 		return nil, fmt.Errorf("unknown agent %q", name)

@@ -34,10 +34,10 @@ func newTestHandler(t *testing.T) *Handler {
 			t.Fatal(err)
 		}
 	}
-	taskMgr := task.NewManager(filepath.Join(dataDir, "tasks"), filepath.Join(dataDir, "task_meta"), filepath.Join(dataDir, "pipelines"))
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	taskMgr := task.NewManager(filepath.Join(dataDir, "tasks"), filepath.Join(dataDir, "task_meta"), filepath.Join(dataDir, "pipelines"), logger)
 	runMgr := runner.NewManager(filepath.Join(dataDir, "runs"), dataDir, taskMgr, logger, agent.MustGet("claude-code"))
-	pipeMgr := pipeline.NewManager(filepath.Join(dataDir, "pipelines"), taskMgr, runMgr)
+	pipeMgr := pipeline.NewManager(filepath.Join(dataDir, "pipelines"), taskMgr, runMgr, logger)
 	runMgr.SetPipelineStatusSetter(pipeMgr)
 	tmpl := template.Must(template.New("index").Parse(""))
 	return NewHandler(taskMgr, pipeMgr, runMgr, dataDir, tmpl, http.Dir(dir), logger)
@@ -92,6 +92,15 @@ func doRequest(t *testing.T, h *Handler, method, path string, body interface{}) 
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	w := httptest.NewRecorder()
+	h.Router().ServeHTTP(w, req)
+	return w.Result()
+}
+
+func doRequestRaw(t *testing.T, h *Handler, method, path, contentType, rawBody string) *http.Response {
+	t.Helper()
+	req := httptest.NewRequest(method, path, strings.NewReader(rawBody))
+	req.Header.Set("Content-Type", contentType)
 	w := httptest.NewRecorder()
 	h.Router().ServeHTTP(w, req)
 	return w.Result()
@@ -177,26 +186,7 @@ func startAndWait(t *testing.T, h *Handler, pipelineID string, timeout time.Dura
 	mustStatus(t, resp, 200)
 	runID = decodeMap(t, resp)["run_id"].(string)
 
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		stateResp := doRequest(t, h, "GET", "/api/state", nil)
-		if stateResp.StatusCode != 200 {
-			time.Sleep(100 * time.Millisecond)
-			continue
-		}
-		s := decodeJSON[runner.OrchestratorState](t, stateResp)
-		stillRunning := false
-		for _, rp := range s.RunningPipelines {
-			if rp.PipelineID == pipelineID {
-				stillRunning = true
-				break
-			}
-		}
-		if !stillRunning {
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+	waitForPipelineDone(t, h, pipelineID, timeout)
 
 	infoResp := doRequest(t, h, "GET", "/api/runs/"+runID, nil)
 	mustStatus(t, infoResp, 200)
@@ -229,11 +219,10 @@ func waitForPipelineDone(t *testing.T, h *Handler, pipelineID string, timeout ti
 	t.Fatalf("pipeline %s did not finish within %v", pipelineID, timeout)
 }
 
-func ptr[T ~int | ~string | ~bool](v T) *T { return &v }
-
 // ===== Task Lifecycle Tests =====
 
 func TestUploadTaskValid(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	m := createTestTask(t, h, "my-task", "#!/bin/sh\necho ok\nexit 0\n")
 	if m.Name != "my-task" {
@@ -248,6 +237,7 @@ func TestUploadTaskValid(t *testing.T) {
 }
 
 func TestUploadTaskInvalidName(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	path := makeTar(t, "@invalid!", map[string]string{"run.sh": "#!/bin/sh\necho ok\n"})
 	// Rename to match the invalid name
@@ -262,6 +252,7 @@ func TestUploadTaskInvalidName(t *testing.T) {
 }
 
 func TestUploadTaskDuplicate(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "dup-task", "#!/bin/sh\necho ok\n")
 	// Upload the same task again
@@ -275,6 +266,7 @@ func TestUploadTaskDuplicate(t *testing.T) {
 }
 
 func TestUploadTaskNotTar(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	var buf bytes.Buffer
 	w := multipart.NewWriter(&buf)
@@ -289,6 +281,7 @@ func TestUploadTaskNotTar(t *testing.T) {
 }
 
 func TestUploadLLMPromptTask(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	path := makeTar(t, "llm-test", map[string]string{
 		"prompt.md":                 "Analyze this code.",
@@ -312,6 +305,7 @@ func TestUploadLLMPromptTask(t *testing.T) {
 }
 
 func TestUploadLLMPromptMissingPromptMD(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	path := makeTar(t, "bad-llm", map[string]string{
 		"run.sh":                    "#!/bin/sh\necho hi\n",
@@ -326,6 +320,7 @@ func TestUploadLLMPromptMissingPromptMD(t *testing.T) {
 }
 
 func TestUploadLLMPromptWithExplicitAgent(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	path := makeTar(t, "llm-agent-exp", map[string]string{
 		"prompt.md":                 "Test.",
@@ -343,6 +338,7 @@ func TestUploadLLMPromptWithExplicitAgent(t *testing.T) {
 }
 
 func TestUploadLLMPromptUnknownType(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	path := makeTar(t, "unknown-type", map[string]string{
 		"run.sh":                    "#!/bin/sh\necho hi\n",
@@ -357,6 +353,7 @@ func TestUploadLLMPromptUnknownType(t *testing.T) {
 }
 
 func TestListTasks(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "task-a", "#!/bin/sh\necho a\n")
 	createTestTask(t, h, "task-b", "#!/bin/sh\necho b\n")
@@ -369,6 +366,7 @@ func TestListTasks(t *testing.T) {
 }
 
 func TestListTasksEmpty(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	resp := doRequest(t, h, "GET", "/api/tasks", nil)
 	mustStatus(t, resp, 200)
@@ -381,6 +379,7 @@ func TestListTasksEmpty(t *testing.T) {
 }
 
 func TestGetTaskWithReadme(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	path := makeTar(t, "readme-task", map[string]string{
 		"run.sh":    "#!/bin/sh\necho hi\n",
@@ -401,12 +400,14 @@ func TestGetTaskWithReadme(t *testing.T) {
 }
 
 func TestGetTaskNonExistent(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	resp := doRequest(t, h, "GET", "/api/tasks/no-such-task", nil)
 	mustStatus(t, resp, 404)
 }
 
 func TestGetLLMTaskDetailHasLLMAgent(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	path := makeTar(t, "llm-detail", map[string]string{
 		"prompt.md":                 "Test.",
@@ -432,6 +433,7 @@ func TestGetLLMTaskDetailHasLLMAgent(t *testing.T) {
 }
 
 func TestUpdateTaskConfig(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "config-task", "#!/bin/sh\necho ok\n")
 
@@ -462,6 +464,7 @@ func TestUpdateTaskConfig(t *testing.T) {
 }
 
 func TestUpdateTaskNonExistent(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	resp := doRequest(t, h, "PUT", "/api/tasks/no-such", map[string]interface{}{
 		"run_command": "./x.sh",
@@ -470,6 +473,7 @@ func TestUpdateTaskNonExistent(t *testing.T) {
 }
 
 func TestUpdateTaskConfigLLMAgent(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	// Upload an LLM task
 	path := makeTar(t, "llm-agent-cfg", map[string]string{
@@ -533,6 +537,7 @@ func TestUpdateTaskConfigLLMAgent(t *testing.T) {
 }
 
 func TestDeleteTaskReferencedByPipeline(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "used-task", "#!/bin/sh\necho ok\n")
 	p := createTestPipeline(t, h, "ref-pipe")
@@ -547,6 +552,7 @@ func TestDeleteTaskReferencedByPipeline(t *testing.T) {
 }
 
 func TestDeleteTaskNotReferenced(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "free-task", "#!/bin/sh\necho ok\n")
 	resp := doRequest(t, h, "DELETE", "/api/tasks/free-task", nil)
@@ -557,6 +563,7 @@ func TestDeleteTaskNotReferenced(t *testing.T) {
 }
 
 func TestDownloadTask(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "dl-task", "#!/bin/sh\necho downloaded\n")
 	resp := doRequest(t, h, "GET", "/api/tasks/dl-task/download", nil)
@@ -572,6 +579,7 @@ func TestDownloadTask(t *testing.T) {
 // ===== Pipeline Lifecycle Tests =====
 
 func TestCreatePipeline(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	p := createTestPipeline(t, h, "test-pipe")
 	if p.ID == "" {
@@ -589,6 +597,7 @@ func TestCreatePipeline(t *testing.T) {
 }
 
 func TestCreatePipelineDuplicateName(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestPipeline(t, h, "dupe-pipe")
 	resp := doRequest(t, h, "POST", "/api/pipelines", map[string]interface{}{"name": "DUPE-PIPE"})
@@ -596,12 +605,14 @@ func TestCreatePipelineDuplicateName(t *testing.T) {
 }
 
 func TestCreatePipelineNoName(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	resp := doRequest(t, h, "POST", "/api/pipelines", map[string]interface{}{})
 	mustStatus(t, resp, 400)
 }
 
 func TestCreatePipelineInvalidCron(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	resp := doRequest(t, h, "POST", "/api/pipelines", map[string]interface{}{
 		"name":     "bad-cron",
@@ -611,6 +622,7 @@ func TestCreatePipelineInvalidCron(t *testing.T) {
 }
 
 func TestCreatePipelineValidCron(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	resp := doRequest(t, h, "POST", "/api/pipelines", map[string]interface{}{
 		"name":     "good-cron",
@@ -624,6 +636,7 @@ func TestCreatePipelineValidCron(t *testing.T) {
 }
 
 func TestCreatePipelineNegativeLoopCount(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	resp := doRequest(t, h, "POST", "/api/pipelines", map[string]interface{}{
 		"name":       "bad-loop",
@@ -633,6 +646,7 @@ func TestCreatePipelineNegativeLoopCount(t *testing.T) {
 }
 
 func TestCreatePipelineZeroLoopCount(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	resp := doRequest(t, h, "POST", "/api/pipelines", map[string]interface{}{
 		"name":       "forever-loop",
@@ -646,6 +660,7 @@ func TestCreatePipelineZeroLoopCount(t *testing.T) {
 }
 
 func TestListPipelines(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestPipeline(t, h, "p1")
 	createTestPipeline(t, h, "p2")
@@ -658,6 +673,7 @@ func TestListPipelines(t *testing.T) {
 }
 
 func TestListPipelinesEmpty(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	resp := doRequest(t, h, "GET", "/api/pipelines", nil)
 	mustStatus(t, resp, 200)
@@ -669,6 +685,7 @@ func TestListPipelinesEmpty(t *testing.T) {
 }
 
 func TestGetPipelineWithEnrichedTasks(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "enrich-task", "#!/bin/sh\necho enriched\n")
 	pl := createTestPipeline(t, h, "enrich-pipe")
@@ -691,12 +708,14 @@ func TestGetPipelineWithEnrichedTasks(t *testing.T) {
 }
 
 func TestGetPipelineNonExistent(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	resp := doRequest(t, h, "GET", "/api/pipelines/no-such", nil)
 	mustStatus(t, resp, 404)
 }
 
 func TestAddTask(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "add-me", "#!/bin/sh\necho added\n")
 	p := createTestPipeline(t, h, "add-pipe")
@@ -712,6 +731,7 @@ func TestAddTask(t *testing.T) {
 }
 
 func TestAddNonExistentTask(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	p := createTestPipeline(t, h, "missing-task-pipe")
 	resp := doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
@@ -722,8 +742,9 @@ func TestAddNonExistentTask(t *testing.T) {
 }
 
 func TestAddTaskToRunningPipeline(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
-	createTestTask(t, h, "sleepy", "#!/bin/sh\nsleep 10\necho done\n")
+	createTestTask(t, h, "sleepy", "#!/bin/sh\nsleep 2\necho done\n")
 	p := createTestPipeline(t, h, "running-add")
 	mustAddTask(t, h, p.ID, "sleepy")
 
@@ -742,6 +763,7 @@ func TestAddTaskToRunningPipeline(t *testing.T) {
 }
 
 func TestRemoveTaskByIndex(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "rm-me", "#!/bin/sh\necho rm\n")
 	p := createTestPipeline(t, h, "remove-pipe")
@@ -765,6 +787,7 @@ func TestRemoveTaskByIndex(t *testing.T) {
 }
 
 func TestRemoveTaskOutOfBounds(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "bounds", "#!/bin/sh\necho bounds\n")
 	p := createTestPipeline(t, h, "bounds-pipe")
@@ -780,6 +803,7 @@ func TestRemoveTaskOutOfBounds(t *testing.T) {
 }
 
 func TestReorderTasks(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "task-a", "#!/bin/sh\necho a\n")
 	createTestTask(t, h, "task-b", "#!/bin/sh\necho b\n")
@@ -809,6 +833,7 @@ func TestReorderTasks(t *testing.T) {
 }
 
 func TestReorderWithDuplicates(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "dup-a", "#!/bin/sh\necho a\n")
 	p := createTestPipeline(t, h, "dup-reorder")
@@ -827,6 +852,7 @@ func TestReorderWithDuplicates(t *testing.T) {
 }
 
 func TestReorderWithMismatchedCount(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "mm", "#!/bin/sh\necho mm\n")
 	p := createTestPipeline(t, h, "mismatch")
@@ -841,6 +867,7 @@ func TestReorderWithMismatchedCount(t *testing.T) {
 }
 
 func TestSetSchedule(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	p := createTestPipeline(t, h, "sched-pipe")
 	resp := doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
@@ -859,6 +886,7 @@ func TestSetSchedule(t *testing.T) {
 }
 
 func TestSetInvalidSchedule(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	p := createTestPipeline(t, h, "bad-sched")
 	resp := doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
@@ -869,6 +897,7 @@ func TestSetInvalidSchedule(t *testing.T) {
 }
 
 func TestSetWebhook(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	p := createTestPipeline(t, h, "webhook-pipe")
 	resp := doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
@@ -887,6 +916,7 @@ func TestSetWebhook(t *testing.T) {
 }
 
 func TestSetLoopCount(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	p := createTestPipeline(t, h, "loop-pipe")
 	resp := doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
@@ -906,6 +936,7 @@ func TestSetLoopCount(t *testing.T) {
 }
 
 func TestSetTaskConfig(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "cfg-task", "#!/bin/sh\necho cfg\n")
 	p := createTestPipeline(t, h, "cfg-pipe")
@@ -935,6 +966,7 @@ func TestSetTaskConfig(t *testing.T) {
 }
 
 func TestSetInvalidOnTimeout(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "bad-action", "#!/bin/sh\necho bad\n")
 	p := createTestPipeline(t, h, "bad-action-pipe")
@@ -949,6 +981,7 @@ func TestSetInvalidOnTimeout(t *testing.T) {
 }
 
 func TestSetConfigOutOfBounds(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "oob", "#!/bin/sh\necho oob\n")
 	p := createTestPipeline(t, h, "oob-pipe")
@@ -963,6 +996,7 @@ func TestSetConfigOutOfBounds(t *testing.T) {
 }
 
 func TestDeletePipeline(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	p := createTestPipeline(t, h, "del-pipe")
 	resp := doRequest(t, h, "DELETE", "/api/pipelines/"+p.ID, nil)
@@ -973,8 +1007,9 @@ func TestDeletePipeline(t *testing.T) {
 }
 
 func TestDeleteRunningPipeline(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
-	createTestTask(t, h, "sleepy2", "#!/bin/sh\nsleep 10\necho zzz\n")
+	createTestTask(t, h, "sleepy2", "#!/bin/sh\nsleep 2\necho zzz\n")
 	p := createTestPipeline(t, h, "running-del")
 	mustAddTask(t, h, p.ID, "sleepy2")
 
@@ -988,14 +1023,205 @@ func TestDeleteRunningPipeline(t *testing.T) {
 }
 
 func TestDeleteNonExistentPipeline(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	resp := doRequest(t, h, "DELETE", "/api/pipelines/no-such-pipe", nil)
 	mustStatus(t, resp, 404)
 }
 
+// ===== Pipeline Export/Import Tests =====
+
+func importPipelineViaMultipart(t *testing.T, h *Handler, filename string, jsonContent string) *http.Response {
+	t.Helper()
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	part, err := w.CreateFormFile("file", filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(part, jsonContent); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest("POST", "/api/pipelines/import", &buf)
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	rr := httptest.NewRecorder()
+	h.Router().ServeHTTP(rr, req)
+	return rr.Result()
+}
+
+func TestExportPipeline(t *testing.T) {
+	t.Parallel()
+	h := newTestHandler(t)
+	createTestTask(t, h, "exp-task", "#!/bin/sh\necho ok\n")
+	p := createTestPipeline(t, h, "export-test")
+	mustAddTask(t, h, p.ID, "exp-task")
+
+	resp := doRequest(t, h, "GET", "/api/pipelines/"+p.ID+"/export", nil)
+	mustStatus(t, resp, 200)
+	if ct := resp.Header.Get("Content-Type"); ct != "application/json" {
+		t.Fatalf("expected Content-Type application/json, got %s", ct)
+	}
+	if cd := resp.Header.Get("Content-Disposition"); !strings.Contains(cd, `attachment;`) || !strings.Contains(cd, ".json") {
+		t.Fatalf("expected attachment Content-Disposition with .json, got %s", cd)
+	}
+	var exp pipeline.PipelineExport
+	if err := json.NewDecoder(resp.Body).Decode(&exp); err != nil {
+		t.Fatalf("decode export: %v", err)
+	}
+	if exp.Name != "export-test" {
+		t.Fatalf("expected name export-test, got %s", exp.Name)
+	}
+	if len(exp.Tasks) != 1 || exp.Tasks[0].Name != "exp-task" {
+		t.Fatalf("expected 1 task (exp-task), got %d", len(exp.Tasks))
+	}
+}
+
+func TestExportPipelineNonExistent(t *testing.T) {
+	t.Parallel()
+	h := newTestHandler(t)
+	resp := doRequest(t, h, "GET", "/api/pipelines/no-such-pipe/export", nil)
+	mustStatus(t, resp, 404)
+}
+
+func TestImportPipeline(t *testing.T) {
+	t.Parallel()
+	h := newTestHandler(t)
+	createTestTask(t, h, "imp-task", "#!/bin/sh\necho ok\n")
+
+	jsonContent := `{"name":"imported-pipe","tasks":[{"name":"imp-task","stage":"build"}]}`
+	resp := importPipelineViaMultipart(t, h, "pipeline.json", jsonContent)
+	mustStatus(t, resp, 201)
+
+	var created pipeline.Pipeline
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode created pipeline: %v", err)
+	}
+	if created.Name != "imported-pipe" {
+		t.Fatalf("expected name imported-pipe, got %s", created.Name)
+	}
+	if created.Status != "idle" {
+		t.Fatalf("expected status idle, got %s", created.Status)
+	}
+	if created.ID == "" {
+		t.Fatal("expected non-empty id")
+	}
+	if len(created.Tasks) != 1 || created.Tasks[0].Name != "imp-task" {
+		t.Fatalf("expected 1 task (imp-task), got %d", len(created.Tasks))
+	}
+	if created.Tasks[0].Stage != "build" {
+		t.Fatalf("expected stage build, got %s", created.Tasks[0].Stage)
+	}
+}
+
+func TestImportPipelineDuplicateName(t *testing.T) {
+	t.Parallel()
+	h := newTestHandler(t)
+	createTestTask(t, h, "dup-imp", "#!/bin/sh\necho ok\n")
+	createTestPipeline(t, h, "existing-pipe")
+
+	jsonContent := `{"name":"existing-pipe","tasks":[{"name":"dup-imp"}]}`
+	resp := importPipelineViaMultipart(t, h, "pipeline.json", jsonContent)
+	mustStatus(t, resp, 409)
+}
+
+func TestImportPipelineMissingName(t *testing.T) {
+	t.Parallel()
+	h := newTestHandler(t)
+	resp := importPipelineViaMultipart(t, h, "pipeline.json", `{"tasks":[]}`)
+	mustStatus(t, resp, 400)
+	m := decodeMap(t, resp)
+	if !strings.Contains(m["error"].(string), "name") {
+		t.Fatalf("expected name error, got: %v", m["error"])
+	}
+}
+
+func TestImportPipelineInvalidJSON(t *testing.T) {
+	t.Parallel()
+	h := newTestHandler(t)
+	resp := importPipelineViaMultipart(t, h, "pipeline.json", `not json at all`)
+	mustStatus(t, resp, 400)
+	m := decodeMap(t, resp)
+	if !strings.Contains(m["error"].(string), "JSON") {
+		t.Fatalf("expected JSON error, got: %v", m["error"])
+	}
+}
+
+func TestImportPipelineTaskNotFound(t *testing.T) {
+	t.Parallel()
+	h := newTestHandler(t)
+	jsonContent := `{"name":"bad-ref-pipe","tasks":[{"name":"no-such-task"}]}`
+	resp := importPipelineViaMultipart(t, h, "pipeline.json", jsonContent)
+	mustStatus(t, resp, 400)
+	m := decodeMap(t, resp)
+	if !strings.Contains(m["error"].(string), "task not found") {
+		t.Fatalf("expected task not found error, got: %v", m["error"])
+	}
+}
+
+func TestImportPipelineInvalidCron(t *testing.T) {
+	t.Parallel()
+	h := newTestHandler(t)
+	jsonContent := `{"name":"bad-cron-pipe","schedule":"not-a-cron"}`
+	resp := importPipelineViaMultipart(t, h, "pipeline.json", jsonContent)
+	mustStatus(t, resp, 400)
+	m := decodeMap(t, resp)
+	if !strings.Contains(m["error"].(string), "cron") {
+		t.Fatalf("expected cron error, got: %v", m["error"])
+	}
+}
+
+func TestImportPipelineViaJSON(t *testing.T) {
+	t.Parallel()
+	h := newTestHandler(t)
+	createTestTask(t, h, "json-imp-task", "#!/bin/sh\necho json\n")
+
+	resp := doRequest(t, h, "POST", "/api/pipelines/import", map[string]interface{}{
+		"name":  "json-imported",
+		"tasks": []interface{}{map[string]interface{}{"name": "json-imp-task"}},
+	})
+	mustStatus(t, resp, 201)
+
+	var created pipeline.Pipeline
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if created.Name != "json-imported" {
+		t.Fatalf("expected name json-imported, got %s", created.Name)
+	}
+	if len(created.Tasks) != 1 || created.Tasks[0].Name != "json-imp-task" {
+		t.Fatalf("expected 1 task json-imp-task, got %d", len(created.Tasks))
+	}
+}
+
+func TestImportPipelineStripsRuntimeFields(t *testing.T) {
+	t.Parallel()
+	h := newTestHandler(t)
+	createTestTask(t, h, "strip-task", "#!/bin/sh\necho strip\n")
+
+	// Import JSON that includes id, status, created_at — they should be ignored
+	jsonContent := `{"name":"strip-test","id":"pipeline-999","status":"running","created_at":"2020-01-01T00:00:00Z","tasks":[{"name":"strip-task"}]}`
+	resp := importPipelineViaMultipart(t, h, "pipeline.json", jsonContent)
+	mustStatus(t, resp, 201)
+
+	var created pipeline.Pipeline
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if created.ID == "pipeline-999" {
+		t.Fatal("imported pipeline should have new ID, not the one from import JSON")
+	}
+	if created.Status != "idle" {
+		t.Fatalf("imported pipeline should have status idle, got %s", created.Status)
+	}
+}
+
 // ===== Pipeline Execution Tests =====
 
 func TestStartPipeline(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "quick-task", "#!/bin/sh\necho quick\nexit 0\n")
 	p := createTestPipeline(t, h, "start-pipe")
@@ -1011,6 +1237,7 @@ func TestStartPipeline(t *testing.T) {
 }
 
 func TestStartEmptyPipeline(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	p := createTestPipeline(t, h, "empty-start")
 	resp := doRequest(t, h, "POST", "/api/pipelines/"+p.ID+"/start", nil)
@@ -1018,8 +1245,9 @@ func TestStartEmptyPipeline(t *testing.T) {
 }
 
 func TestStartAlreadyRunningPipeline(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
-	createTestTask(t, h, "slow-task", "#!/bin/sh\nsleep 10\necho slow\n")
+	createTestTask(t, h, "slow-task", "#!/bin/sh\nsleep 2\necho slow\n")
 	p := createTestPipeline(t, h, "double-start")
 	mustAddTask(t, h, p.ID, "slow-task")
 
@@ -1033,12 +1261,14 @@ func TestStartAlreadyRunningPipeline(t *testing.T) {
 }
 
 func TestStartNonExistentPipeline(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	resp := doRequest(t, h, "POST", "/api/pipelines/no-such/start", nil)
 	mustStatus(t, resp, 404)
 }
 
 func TestRunCompletesSuccessfully(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "success-task", "#!/bin/sh\necho success\nexit 0\n")
 	p := createTestPipeline(t, h, "success-pipe")
@@ -1056,6 +1286,7 @@ func TestRunCompletesSuccessfully(t *testing.T) {
 }
 
 func TestTaskTimeoutWithFail(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "sleeper", "#!/bin/sh\nsleep 30\necho never\n")
 	// Set timeout via task update
@@ -1078,6 +1309,7 @@ func TestTaskTimeoutWithFail(t *testing.T) {
 }
 
 func TestTaskTimeoutWithSkip(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "skip-sleeper", "#!/bin/sh\nsleep 30\necho never\n")
 	doRequest(t, h, "PUT", "/api/tasks/skip-sleeper", map[string]interface{}{
@@ -1103,7 +1335,44 @@ func TestTaskTimeoutWithSkip(t *testing.T) {
 	}
 }
 
+
+func TestRetryOnTimeoutViaHandler(t *testing.T) {
+	t.Parallel()
+	h := newTestHandler(t)
+	createTestTask(t, h, "retry-sleeper", "#!/bin/sh\nsleep 30\necho never\n")
+	doRequest(t, h, "PUT", "/api/tasks/retry-sleeper", map[string]interface{}{
+		"run_command":     "./run.sh",
+		"timeout_enabled": true,
+		"timeout_seconds": 1,
+		"on_timeout":      "skip",
+		"retry_count":     1,
+	})
+	p := createTestPipeline(t, h, "retry-on-timeout")
+	mustAddTask(t, h, p.ID, "retry-sleeper")
+
+	runID, instances := startAndWait(t, h, p.ID, 15*time.Second)
+
+	if len(instances) != 1 {
+		t.Fatalf("expected 1 task instance, got %d", len(instances))
+	}
+	if instances[0].Status != runner.TaskStatusTimeout {
+		t.Fatalf("expected timeout even after retry, got %s", instances[0].Status)
+	}
+
+	resp := doRequest(t, h, "GET", "/api/runs/"+runID+"/events", nil)
+	mustStatus(t, resp, 200)
+	m := decodeMap(t, resp)
+	events := m["events"].(string)
+	if !strings.Contains(events, "event=retry") {
+		t.Fatalf("expected retry event in events log, got:\n%s", events)
+	}
+	if !strings.Contains(events, "event=timeout") {
+		t.Fatalf("expected timeout event in events log, got:\n%s", events)
+	}
+}
+
 func TestContinueOnFailure(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "failer", "#!/bin/sh\nexit 1\n")
 	createTestTask(t, h, "after-fail", "#!/bin/sh\necho survived\nexit 0\n")
@@ -1128,6 +1397,7 @@ func TestContinueOnFailure(t *testing.T) {
 }
 
 func TestManualStop(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "long-sleep", "#!/bin/sh\nsleep 30\necho finally\n")
 	p := createTestPipeline(t, h, "stop-pipe")
@@ -1137,13 +1407,13 @@ func TestManualStop(t *testing.T) {
 	mustStatus(t, resp, 200)
 	runID := decodeMap(t, resp)["run_id"].(string)
 
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(200 * time.Millisecond)
 
 	resp = doRequest(t, h, "POST", "/api/pipelines/"+p.ID+"/stop", nil)
 	mustStatus(t, resp, 200)
 
 	// Wait for pipeline to finish stopping
-	time.Sleep(3 * time.Second)
+	time.Sleep(1 * time.Second)
 
 	resp = doRequest(t, h, "GET", "/api/runs/"+runID, nil)
 	mustStatus(t, resp, 200)
@@ -1157,6 +1427,7 @@ func TestManualStop(t *testing.T) {
 }
 
 func TestStopNonRunningPipeline(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	p := createTestPipeline(t, h, "idle-stop")
 	resp := doRequest(t, h, "POST", "/api/pipelines/"+p.ID+"/stop", nil)
@@ -1166,6 +1437,7 @@ func TestStopNonRunningPipeline(t *testing.T) {
 // ===== ContinueRun Tests =====
 
 func TestContinueRunAfterFailure(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "fail-once", "#!/bin/sh\nexit 1\n")
 	p := createTestPipeline(t, h, "retry-pipe")
@@ -1190,6 +1462,7 @@ func TestContinueRunAfterFailure(t *testing.T) {
 }
 
 func TestContinueRunAllSucceeded(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "ok-task", "#!/bin/sh\nexit 0\n")
 	p := createTestPipeline(t, h, "all-ok")
@@ -1205,6 +1478,7 @@ func TestContinueRunAllSucceeded(t *testing.T) {
 }
 
 func TestContinueRunCrossPipeline(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "cross-fail", "#!/bin/sh\nexit 1\n")
 	pA := createTestPipeline(t, h, "cross-a")
@@ -1228,6 +1502,7 @@ func TestContinueRunCrossPipeline(t *testing.T) {
 // ===== Run Management Tests =====
 
 func TestListRuns(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "list-task", "#!/bin/sh\necho listed\nexit 0\n")
 	p := createTestPipeline(t, h, "list-pipe")
@@ -1247,6 +1522,7 @@ func TestListRuns(t *testing.T) {
 }
 
 func TestListRunsFilterByPipelineID(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "filter-task", "#!/bin/sh\necho filtered\nexit 0\n")
 	p1 := createTestPipeline(t, h, "filter-a")
@@ -1267,6 +1543,7 @@ func TestListRunsFilterByPipelineID(t *testing.T) {
 }
 
 func TestListRunsEmpty(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	resp := doRequest(t, h, "GET", "/api/runs", nil)
 	mustStatus(t, resp, 200)
@@ -1278,6 +1555,7 @@ func TestListRunsEmpty(t *testing.T) {
 }
 
 func TestGetRunInfo(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "info-a", "#!/bin/sh\necho a\n")
 	createTestTask(t, h, "info-b", "#!/bin/sh\necho b\n")
@@ -1298,6 +1576,7 @@ func TestGetRunInfo(t *testing.T) {
 }
 
 func TestGetRunLogs(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "logger", "#!/bin/sh\necho hello world\necho error msg >&2\nexit 0\n")
 	p := createTestPipeline(t, h, "log-pipe")
@@ -1317,12 +1596,14 @@ func TestGetRunLogs(t *testing.T) {
 }
 
 func TestGetRunLogsMissingTaskParam(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	resp := doRequest(t, h, "GET", "/api/runs/run-x-001?log=1", nil)
 	mustStatus(t, resp, 400)
 }
 
 func TestGetRunEvents(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "event-task", "#!/bin/sh\nexit 0\n")
 	p := createTestPipeline(t, h, "event-pipe")
@@ -1333,12 +1614,27 @@ func TestGetRunEvents(t *testing.T) {
 	resp := doRequest(t, h, "GET", "/api/runs/"+runID+"/events", nil)
 	mustStatus(t, resp, 200)
 	m := decodeMap(t, resp)
-	if m["events"] == nil || !strings.Contains(m["events"].(string), "pipeline_started") {
-		t.Fatalf("expected events containing pipeline_started, got: %v", m["events"])
+	events := m["events"].(string)
+
+	// Pipeline-level events
+	if !strings.Contains(events, "pipeline_started") {
+		t.Fatalf("expected pipeline_started event, got: %s", events)
+	}
+	if !strings.Contains(events, "pipeline_finished") {
+		t.Fatalf("expected pipeline_finished event, got: %s", events)
+	}
+
+	// Task-level events
+	if !strings.Contains(events, "task=event-task[1] status=running") {
+		t.Fatalf("expected task started (status=running) event, got: %s", events)
+	}
+	if !strings.Contains(events, "task=event-task[1] status=success") {
+		t.Fatalf("expected task completed (status=success) event, got: %s", events)
 	}
 }
 
 func TestDeleteRun(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "delrun-task", "#!/bin/sh\nexit 0\n")
 	p := createTestPipeline(t, h, "delrun-pipe")
@@ -1354,8 +1650,9 @@ func TestDeleteRun(t *testing.T) {
 }
 
 func TestDeleteActiveRun(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
-	createTestTask(t, h, "active-del", "#!/bin/sh\nsleep 10\necho done\n")
+	createTestTask(t, h, "active-del", "#!/bin/sh\nsleep 2\necho done\n")
 	p := createTestPipeline(t, h, "active-del-pipe")
 	mustAddTask(t, h, p.ID, "active-del")
 
@@ -1377,6 +1674,7 @@ func TestDeleteActiveRun(t *testing.T) {
 // ===== State Tests =====
 
 func TestGetStateIdle(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	resp := doRequest(t, h, "GET", "/api/state", nil)
 	mustStatus(t, resp, 200)
@@ -1387,6 +1685,7 @@ func TestGetStateIdle(t *testing.T) {
 }
 
 func TestStateReflectsRunning(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "state-sleep", "#!/bin/sh\nsleep 5\necho awoken\n")
 	p := createTestPipeline(t, h, "state-pipe")
@@ -1425,6 +1724,7 @@ func TestStateReflectsRunning(t *testing.T) {
 // ===== Loop Execution Test =====
 
 func TestLoopExecution(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "loop-task", "#!/bin/sh\necho loop iteration\nexit 0\n")
 	resp := doRequest(t, h, "POST", "/api/pipelines", map[string]interface{}{
@@ -1455,6 +1755,7 @@ func TestLoopExecution(t *testing.T) {
 // ===== Cleanup Tests =====
 
 func TestCleanupMaxRunsEnforcement(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "clean-task", "#!/bin/sh\nexit 0\n")
 	p := createTestPipeline(t, h, "clean-pipe")
@@ -1463,7 +1764,7 @@ func TestCleanupMaxRunsEnforcement(t *testing.T) {
 	// Run 5 times
 	for i := 0; i < 5; i++ {
 		doRequest(t, h, "POST", "/api/pipelines/"+p.ID+"/start", nil)
-		time.Sleep(500 * time.Millisecond) // ensure different run IDs
+		time.Sleep(100 * time.Millisecond) // ensure different run IDs
 	}
 	// Wait for the last one to finish
 	waitForPipelineDone(t, h, p.ID, 15*time.Second)
@@ -1491,6 +1792,7 @@ func TestCleanupMaxRunsEnforcement(t *testing.T) {
 }
 
 func TestCleanupSkipsRunningPipelines(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "skip-clean", "#!/bin/sh\nexit 0\n")
 	p := createTestPipeline(t, h, "skip-clean-pipe")
@@ -1499,7 +1801,7 @@ func TestCleanupSkipsRunningPipelines(t *testing.T) {
 	// Create 5 completed runs
 	for i := 0; i < 5; i++ {
 		doRequest(t, h, "POST", "/api/pipelines/"+p.ID+"/start", nil)
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
 	startAndWait(t, h, p.ID, 10*time.Second)
 
@@ -1508,7 +1810,7 @@ func TestCleanupSkipsRunningPipelines(t *testing.T) {
 	p2 := createTestPipeline(t, h, "running-clean")
 	mustAddTask(t, h, p2.ID, "long-clean")
 	doRequest(t, h, "POST", "/api/pipelines/"+p2.ID+"/start", nil)
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
 
 	// Cleanup should skip p2 (running) and clean p1
 	deleted, _ := h.Runner.CleanupOldRuns(3)
@@ -1537,6 +1839,7 @@ func TestCleanupSkipsRunningPipelines(t *testing.T) {
 // ===== Cron Validation Tests =====
 
 func TestValidCronExpressions(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	tests := []struct {
 		schedule string
@@ -1570,6 +1873,7 @@ func TestValidCronExpressions(t *testing.T) {
 // ===== Duplicate Task Index Tests =====
 
 func TestDuplicateTaskInPipeline(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "dup", "#!/bin/sh\necho dup\n")
 	p := createTestPipeline(t, h, "dup-pipe")
@@ -1623,6 +1927,7 @@ func TestDuplicateTaskInPipeline(t *testing.T) {
 // ===== Pipeline Defaults Test =====
 
 func TestRetryCountDefaults(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "retry-def", "#!/bin/sh\necho default\n")
 	// Set task-level retry
@@ -1650,6 +1955,7 @@ func TestRetryCountDefaults(t *testing.T) {
 // ===== Loop + ContinueRun Iteration Tests =====
 
 func TestLoopContinueRunPreservesIteration(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "loop-conts", "#!/bin/sh\nsleep 2\nexit 0\n")
 
@@ -1736,6 +2042,7 @@ func TestLoopContinueRunPreservesIteration(t *testing.T) {
 // ===== Webhook Tests =====
 
 func TestWebhookSentOnCompletion(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 
 	received := make(chan map[string]interface{}, 1)
@@ -1776,6 +2083,7 @@ func TestWebhookSentOnCompletion(t *testing.T) {
 }
 
 func TestWebhookNotSentOnManualStop(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 
 	received := make(chan struct{}, 1)
@@ -1795,9 +2103,9 @@ func TestWebhookNotSentOnManualStop(t *testing.T) {
 	mustAddTask(t, h, p.ID, "wh-stop")
 
 	doRequest(t, h, "POST", "/api/pipelines/"+p.ID+"/start", nil)
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(200 * time.Millisecond)
 	doRequest(t, h, "POST", "/api/pipelines/"+p.ID+"/stop", nil)
-	time.Sleep(3 * time.Second)
+	time.Sleep(1 * time.Second)
 
 	select {
 	case <-received:
@@ -1810,6 +2118,7 @@ func TestWebhookNotSentOnManualStop(t *testing.T) {
 // ===== Stop Command Execution Test =====
 
 func TestStopCommandExecuted(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 
 	// Create task whose stop_command writes a marker file
@@ -1825,9 +2134,9 @@ func TestStopCommandExecuted(t *testing.T) {
 	mustAddTask(t, h, p.ID, "stopcmd-test")
 
 	doRequest(t, h, "POST", "/api/pipelines/"+p.ID+"/start", nil)
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(200 * time.Millisecond)
 	doRequest(t, h, "POST", "/api/pipelines/"+p.ID+"/stop", nil)
-	time.Sleep(3 * time.Second)
+	time.Sleep(1 * time.Second)
 
 	if _, err := os.Stat(markerFile); os.IsNotExist(err) {
 		t.Fatal("stop_command was not executed: marker file not found")
@@ -1837,6 +2146,7 @@ func TestStopCommandExecuted(t *testing.T) {
 // ===== Concurrent Pipeline Execution Test =====
 
 func TestConcurrentPipelineExecution(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "conc-task", "#!/bin/sh\nsleep 2\nexit 0\n")
 
@@ -1894,6 +2204,7 @@ func TestConcurrentPipelineExecution(t *testing.T) {
 // ===== Loop Count Zero (Forever) Test =====
 
 func TestLoopCountZeroRunsUntilStopped(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "forever-task", "#!/bin/sh\necho forever\nexit 0\n")
 
@@ -1908,11 +2219,11 @@ func TestLoopCountZeroRunsUntilStopped(t *testing.T) {
 	doRequest(t, h, "POST", "/api/pipelines/"+p.ID+"/start", nil)
 
 	// Let it run for a few iterations
-	time.Sleep(2 * time.Second)
+	time.Sleep(1 * time.Second)
 
 	// Stop it
 	doRequest(t, h, "POST", "/api/pipelines/"+p.ID+"/stop", nil)
-	time.Sleep(1 * time.Second)
+	time.Sleep(500 * time.Millisecond)
 
 	// Verify multiple runs were created
 	runsResp := doRequest(t, h, "GET", "/api/runs?pipeline_id="+p.ID, nil)
@@ -1936,6 +2247,7 @@ func TestLoopCountZeroRunsUntilStopped(t *testing.T) {
 // ===== Task Config Validation Tests =====
 
 func TestUpdateTaskInvalidOnTimeout(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "val-task", "#!/bin/sh\necho ok\n")
 
@@ -1949,6 +2261,7 @@ func TestUpdateTaskInvalidOnTimeout(t *testing.T) {
 }
 
 func TestUpdateTaskValidOnTimeout(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "val2-task", "#!/bin/sh\necho ok\n")
 
@@ -1963,6 +2276,7 @@ func TestUpdateTaskValidOnTimeout(t *testing.T) {
 // ===== Log Retrieval Edge Case Tests =====
 
 func TestGetRunLogsInvalidTaskIdx(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "log-idx", "#!/bin/sh\necho ok\nexit 0\n")
 	p := createTestPipeline(t, h, "log-idx-pipe")
@@ -1978,12 +2292,14 @@ func TestGetRunLogsInvalidTaskIdx(t *testing.T) {
 }
 
 func TestGetRunEventsNonExistent(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	resp := doRequest(t, h, "GET", "/api/runs/run-nonexist-000001/events", nil)
 	mustStatus(t, resp, 404)
 }
 
 func TestDeleteRunInvalidID(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	resp := doRequest(t, h, "DELETE", "/api/runs/not-a-run-id", nil)
 	mustStatus(t, resp, 400)
@@ -1994,6 +2310,7 @@ func TestDeleteRunInvalidID(t *testing.T) {
 }
 
 func TestDeleteRunNonExistent(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	resp := doRequest(t, h, "DELETE", "/api/runs/run-nonexist-000001", nil)
 	mustStatus(t, resp, 404)
@@ -2004,6 +2321,7 @@ func TestDeleteRunNonExistent(t *testing.T) {
 }
 
 func TestGetRunInfoNonExistent(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	resp := doRequest(t, h, "GET", "/api/runs/run-nonexist-000001", nil)
 	mustStatus(t, resp, 404)
@@ -2012,6 +2330,7 @@ func TestGetRunInfoNonExistent(t *testing.T) {
 // ===== Integration: state transition & cross-component tests =====
 
 func TestPipelineReorderAffectsExecution(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "task-order-1", "#!/bin/sh\necho 'task1'\n")
 	createTestTask(t, h, "task-order-2", "#!/bin/sh\necho 'task2'\n")
@@ -2047,6 +2366,7 @@ func TestPipelineReorderAffectsExecution(t *testing.T) {
 }
 
 func TestTaskConfigPropagatesToExecution(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "config-prop", "#!/bin/sh\nsleep 3\necho done\n")
 
@@ -2074,7 +2394,7 @@ func TestTaskConfigPropagatesToExecution(t *testing.T) {
 		"run_command":     "./run.sh",
 		"timeout_enabled": true,
 		"timeout_seconds": 10,
-		"on_timeout":      "fail",
+		"on_timeout":      "skip",
 	})
 
 	_, instances2 := startAndWait(t, h, p.ID, 15*time.Second)
@@ -2087,6 +2407,7 @@ func TestTaskConfigPropagatesToExecution(t *testing.T) {
 }
 
 func TestDeletePipelineCleansUpRuns(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "cleanup-run", "#!/bin/sh\necho cleanup\n")
 	p := createTestPipeline(t, h, "cleanup-run-pipe")
@@ -2114,6 +2435,7 @@ func TestDeletePipelineCleansUpRuns(t *testing.T) {
 }
 
 func TestFullLifecycleStateTransitions(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 
 	// 1. Idle state
@@ -2165,6 +2487,7 @@ func TestFullLifecycleStateTransitions(t *testing.T) {
 }
 
 func TestSetTaskStage(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "stage-task-a", "#!/bin/sh\necho a\n")
 	createTestTask(t, h, "stage-task-b", "#!/bin/sh\necho b\n")
@@ -2217,6 +2540,7 @@ func TestSetTaskStage(t *testing.T) {
 }
 
 func TestParallelStageExecution(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "par-a", "#!/bin/sh\nsleep 0.3\necho a-done\n")
 	createTestTask(t, h, "par-b", "#!/bin/sh\nsleep 0.3\necho b-done\n")
@@ -2266,6 +2590,7 @@ func TestParallelStageExecution(t *testing.T) {
 }
 
 func TestStageContinueOnFailure(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "scf-a", "#!/bin/sh\necho a\n")
 	createTestTask(t, h, "scf-b", "#!/bin/sh\nexit 1\n")
@@ -2304,6 +2629,7 @@ func TestStageContinueOnFailure(t *testing.T) {
 }
 
 func TestStageStopOnFailure(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "ssf-a", "#!/bin/sh\necho a\n")
 	createTestTask(t, h, "ssf-b", "#!/bin/sh\nexit 1\n")
@@ -2335,7 +2661,50 @@ func TestStageStopOnFailure(t *testing.T) {
 	}
 }
 
+
+func TestStageRetryOnTimeout(t *testing.T) {
+	t.Parallel()
+	h := newTestHandler(t)
+	createTestTask(t, h, "build-task", "#!/bin/sh\nsleep 30\necho never\n")
+	createTestTask(t, h, "test-task", "#!/bin/sh\necho ok\nexit 0\n")
+	p := createTestPipeline(t, h, "stage-retry-pipe")
+	mustAddTask(t, h, p.ID, "build-task")
+	mustAddTask(t, h, p.ID, "test-task")
+
+	// Set different stages with timeout+retry on first task
+	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
+		"action":          "set_task_config",
+		"task_index":      0,
+		"stage":           "build",
+		"timeout_seconds": 1,
+		"on_timeout":      "skip",
+		"retry_count":     1,
+	})
+	doRequest(t, h, "PUT", "/api/pipelines/"+p.ID, map[string]interface{}{
+		"action":     "set_task_config",
+		"task_index": 1,
+		"stage":      "test",
+	})
+
+	runID, instances := startAndWait(t, h, p.ID, 15*time.Second)
+
+	if instances[0].Status != runner.TaskStatusTimeout {
+		t.Fatalf("expected timeout on build-task after retry, got %s", instances[0].Status)
+	}
+	if instances[1].Status != runner.TaskStatusSuccess {
+		t.Fatalf("expected success on test-task, got %s", instances[1].Status)
+	}
+
+	resp := doRequest(t, h, "GET", "/api/runs/"+runID+"/events", nil)
+	mustStatus(t, resp, 200)
+	m := decodeMap(t, resp)
+	events := m["events"].(string)
+	if !strings.Contains(events, "event=retry") {
+		t.Fatalf("expected retry event in stage+retry test, got:\n%s", events)
+	}
+}
 func TestStageNoStageFieldBackwardCompat(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "bw-a", "#!/bin/sh\necho a\n")
 	createTestTask(t, h, "bw-b", "#!/bin/sh\necho b\n")
@@ -2365,6 +2734,7 @@ func TestStageNoStageFieldBackwardCompat(t *testing.T) {
 }
 
 func TestStopDuringParallelStage(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "stop-a", "#!/bin/sh\nsleep 30\necho a\n")
 	createTestTask(t, h, "stop-b", "#!/bin/sh\nsleep 30\necho b\n")
@@ -2385,28 +2755,13 @@ func TestStopDuringParallelStage(t *testing.T) {
 	runID := decodeMap(t, resp)["run_id"].(string)
 
 	// Wait for tasks to start
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(200 * time.Millisecond)
 
 	// Stop
 	resp2 := doRequest(t, h, "POST", "/api/pipelines/"+p.ID+"/stop", nil)
 	mustStatus(t, resp2, 200)
 
-	// Wait for pipeline to stop
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		s := decodeJSON[runner.OrchestratorState](t, doRequest(t, h, "GET", "/api/state", nil))
-		stillRunning := false
-		for _, rp := range s.RunningPipelines {
-			if rp.PipelineID == p.ID {
-				stillRunning = true
-				break
-			}
-		}
-		if !stillRunning {
-			break
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
+		waitForPipelineDone(t, h, p.ID, 10*time.Second)
 
 	// Verify both tasks stopped
 	instances := decodeJSON[[]runner.TaskInstance](t, doRequest(t, h, "GET", "/api/runs/"+runID, nil))
@@ -2421,6 +2776,7 @@ func TestStopDuringParallelStage(t *testing.T) {
 }
 
 func TestContinueRunPartialStage(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "cr-a", "#!/bin/sh\necho a\n")
 	createTestTask(t, h, "cr-b", "#!/bin/sh\nexit 1\n")
@@ -2455,21 +2811,7 @@ func TestContinueRunPartialStage(t *testing.T) {
 	})
 	mustStatus(t, resp, 200)
 
-	deadline := time.Now().Add(15 * time.Second)
-	for time.Now().Before(deadline) {
-		s := decodeJSON[runner.OrchestratorState](t, doRequest(t, h, "GET", "/api/state", nil))
-		stillRunning := false
-		for _, rp := range s.RunningPipelines {
-			if rp.PipelineID == p.ID {
-				stillRunning = true
-				break
-			}
-		}
-		if !stillRunning {
-			break
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
+	waitForPipelineDone(t, h, p.ID, 15*time.Second)
 
 	// cr-a should still be success (not re-run), cr-b was re-run
 	newInstances := decodeJSON[[]runner.TaskInstance](t, doRequest(t, h, "GET", "/api/runs/"+runID, nil))
@@ -2489,6 +2831,7 @@ func TestContinueRunPartialStage(t *testing.T) {
 }
 
 func TestContinueRunResumesPendingStage(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "ctp-a", "#!/bin/sh\necho a\n")
 	createTestTask(t, h, "ctp-b", "#!/bin/sh\nsleep 5\necho b\n")
@@ -2512,17 +2855,7 @@ func TestContinueRunResumesPendingStage(t *testing.T) {
 	doRequest(t, h, "POST", "/api/pipelines/"+p.ID+"/stop", nil)
 	mustStatus(t, resp, 200)
 
-	// Wait for pipeline to become idle
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		s := decodeJSON[runner.OrchestratorState](t, doRequest(t, h, "GET", "/api/state", nil))
-		running := false
-		for _, rp := range s.RunningPipelines {
-			if rp.PipelineID == p.ID { running = true; break }
-		}
-		if !running { break }
-		time.Sleep(200 * time.Millisecond)
-	}
+		waitForPipelineDone(t, h, p.ID, 10*time.Second)
 
 	// Verify: ctp-a succeeded, ctp-b is pending (never ran)
 	instances := decodeJSON[[]runner.TaskInstance](t, doRequest(t, h, "GET", "/api/runs/"+runID, nil))
@@ -2542,17 +2875,7 @@ func TestContinueRunResumesPendingStage(t *testing.T) {
 	})
 	mustStatus(t, resp2, 200)
 
-	// Wait for completion
-	deadline2 := time.Now().Add(15 * time.Second)
-	for time.Now().Before(deadline2) {
-		s := decodeJSON[runner.OrchestratorState](t, doRequest(t, h, "GET", "/api/state", nil))
-		running := false
-		for _, rp := range s.RunningPipelines {
-			if rp.PipelineID == p.ID { running = true; break }
-		}
-		if !running { break }
-		time.Sleep(200 * time.Millisecond)
-	}
+		waitForPipelineDone(t, h, p.ID, 15*time.Second)
 
 	// Verify ctp-b was re-run (should now be success)
 	newInstances := decodeJSON[[]runner.TaskInstance](t, doRequest(t, h, "GET", "/api/runs/"+runID, nil))
@@ -2569,6 +2892,7 @@ func TestContinueRunResumesPendingStage(t *testing.T) {
 
 
 func TestLoopWithStages(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "loop-a", "#!/bin/sh\necho loop\n")
 	createTestTask(t, h, "loop-b", "#!/bin/sh\necho loop\n")
@@ -2590,21 +2914,7 @@ func TestLoopWithStages(t *testing.T) {
 	resp := doRequest(t, h, "POST", "/api/pipelines/"+p.ID+"/start", nil)
 	mustStatus(t, resp, 200)
 
-	deadline := time.Now().Add(20 * time.Second)
-	for time.Now().Before(deadline) {
-		s := decodeJSON[runner.OrchestratorState](t, doRequest(t, h, "GET", "/api/state", nil))
-		stillRunning := false
-		for _, rp := range s.RunningPipelines {
-			if rp.PipelineID == p.ID {
-				stillRunning = true
-				break
-			}
-		}
-		if !stillRunning {
-			break
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
+	waitForPipelineDone(t, h, p.ID, 20*time.Second)
 
 	// Should have 2 runs
 	runsResp := doRequest(t, h, "GET", "/api/runs?pipeline_id="+p.ID, nil)
@@ -2616,6 +2926,7 @@ func TestLoopWithStages(t *testing.T) {
 }
 
 func TestSetTasksBasic(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "st-a", "#!/bin/sh\necho a\n")
 	createTestTask(t, h, "st-b", "#!/bin/sh\necho b\n")
@@ -2657,6 +2968,7 @@ func TestSetTasksBasic(t *testing.T) {
 }
 
 func TestSetTasksPreservesStage(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "stg-x", "#!/bin/sh\necho x\n")
 	createTestTask(t, h, "stg-y", "#!/bin/sh\necho y\n")
@@ -2693,6 +3005,7 @@ func TestSetTasksPreservesStage(t *testing.T) {
 }
 
 func TestSetTasksPreservesOverrides(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "ov-a", "#!/bin/sh\necho a\n")
 	p := createTestPipeline(t, h, "set-tasks-override")
@@ -2728,6 +3041,7 @@ func TestSetTasksPreservesOverrides(t *testing.T) {
 }
 
 func TestSetTasksRejectsNonexistentTask(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "real-task", "#!/bin/sh\necho ok\n")
 	p := createTestPipeline(t, h, "set-tasks-bad")
@@ -2743,6 +3057,7 @@ func TestSetTasksRejectsNonexistentTask(t *testing.T) {
 }
 
 func TestRemoveTaskMaintainsRemainingStages(t *testing.T) {
+	t.Parallel()
 	h := newTestHandler(t)
 	createTestTask(t, h, "rm-a", "#!/bin/sh\necho a\n")
 	createTestTask(t, h, "rm-b", "#!/bin/sh\necho b\n")
@@ -2781,6 +3096,7 @@ func TestRemoveTaskMaintainsRemainingStages(t *testing.T) {
 }
 
 func TestComputeStagesAfterReorder(t *testing.T) {
+	t.Parallel()
 	// Verify stage grouping after set_tasks reorder.
 	// Adjacent same-stage tasks should form a group; non-adjacent same-name stages should NOT merge.
 	h := newTestHandler(t)
